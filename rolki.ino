@@ -118,7 +118,7 @@ const BaseType_t WRITER_TASK_CORE = 0;
 const float MIN_DT_S = 0.002f;
 const float GAP_DT_S = 0.008f;
 const float BAD_DT_S = 0.050f;
-const float HP_CUTOFF_HZ = 20.0f;       // filtr górnoprzepustowy przyspieszeń (remove grawitacje/toczenie nisko? worek)
+const float HP_CUTOFF_HZ = 1.0f;        // filtr gornoprzepustowy przyspieszen (poprawka 2.5: 20->1 Hz, aby nie tlumic pasma odepchniecia ~2-5 Hz)
 const float SURGE_LP_CUTOFF_HZ = 8.0f;  // wygładzanie uderzeniowości (surge)
 const float LIVE_INTENSITY_CUTOFF_HZ = 1.5f; // wygładzanie intensywności wyświetlanej
 
@@ -127,12 +127,14 @@ const float LIVE_INTENSITY_CUTOFF_HZ = 1.5f; // wygładzanie intensywności wyś
 // Liczymy siłę odepchnięcia (STROKE_STRENGTH 0-100), kadencję (CADENCE) i moc proxy.
 // ---------------------------------------------------------------------------
 // Wejście do kandydata: uderzeniowość (surge) lub przyspieszenie hp w przód.
-const float STROKE_ENTER_SURGE_GPS = 6.0f;    // próg uderzeniowości na wejściu (g/s)
-const float STROKE_ENTER_HP_G = 0.20f;        // próg przysp. hp na wejściu (g)
-// Potwierdzenie w oknie ~60-100 ms: minimum uderzeniowość albo szczyt hp.
-const float STROKE_CONFIRM_SURGE_GPS = 10.0f;
-const float STROKE_CONFIRM_HP_G = 0.35f;
-const uint32_t STROKE_REFRACTORY_US = 280000; // min. odstęp między odepchnięciami (rytm)
+// Progi dobrane na danych (ses00038/40, HP=1.0 Hz) tak, aby kadencja per-lyzwa
+// wynosila ~70/min zamiast ~130 (eliminacja podwojnego liczenia impulsow).
+const float STROKE_ENTER_SURGE_GPS = 20.0f;   // prog uderzeniowosci na wejsciu (g/s)
+const float STROKE_ENTER_HP_G = 0.80f;        // prog przysp. hp na wejsciu (g)
+// Potwierdzenie w oknie ~60-100 ms: minimum uderzeniowosc albo szczyt hp.
+const float STROKE_CONFIRM_SURGE_GPS = 40.0f;
+const float STROKE_CONFIRM_HP_G = 1.30f;
+const uint32_t STROKE_REFRACTORY_US = 450000; // min. odstep miedzy odepchnieciami (rytm)
 const uint32_t STROKE_WINDOW_US = 120000;     // max. czas okna kandydata (potwierdzenie do ~120 ms)
 const uint8_t STROKE_CADENCE_WINDOW = 12;     // liczba odepchnięć do średniej ruchomej kadencji
 
@@ -140,9 +142,11 @@ const uint8_t STROKE_CADENCE_WINDOW = 12;     // liczba odepchnięć do średnie
 const float STROKE_W_PEAK = 0.40f;            // waga szczytu przyspieszenia w przód
 const float STROKE_W_IMPULSE = 0.30f;         // waga całki impulsu (pomiar "pędu")
 const float STROKE_W_SURGE = 0.30f;           // waga maksymalnej uderzeniowości
-const float STROKE_REF_PEAK_G = 0.55f;        // referencja szczytu (g) — 100% siły = ok. ref
-const float STROKE_REF_IMPULSE_GS = 0.05f;    // referencja całki impulsu (g·s)
-const float STROKE_REF_SURGE_GPS = 45.0f;     // referencja uderzeniowości (g/s)
+// Referencje normalizacji dobrane na danych (HP=1.0 Hz): typowe odepchniecie ~45-60,
+// mocne ~85-100. Poprzednie wartosci (0.55/0.05/45) zanizaly i zapychaly skale.
+const float STROKE_REF_PEAK_G = 5.0f;         // referencja szczytu przysp. hp (g)
+const float STROKE_REF_IMPULSE_GS = 0.30f;    // referencja calki impulsu (g*s)
+const float STROKE_REF_SURGE_GPS = 130.0f;    // referencja uderzeniowosci (g/s)
 
 // INTENSITY v4: względny wskaźnik wysiłku (0-100), z niższym klipingiem niż v3 —
 // rzadkie szczyty nie "zapychają" skali (referencje niższe niż w v3).
@@ -1817,10 +1821,11 @@ void writerTask(void*) {
 void imuTask(void*) {
   OnePoleHighPass hp;
   OnePoleLowPass surgeFilter;
+  OnePoleLowPass afLp;               // poprawka 2.6: LP przyspieszenia w przod dla surge
   OnePoleLowPass liveIntensityFilter;
   uint32_t previousUs = 0;
   uint32_t lastStrokeUs = 0;
-  float previousHp = 0.0f;
+  float previousAfLp = 0.0f;         // poprawka 2.6: poprzednia wartosc LP(af)
   float relLean = 0.0f;
   float intensityAccum = 0.0f;
 
@@ -1832,6 +1837,7 @@ void imuTask(void*) {
   uint32_t candStartUs = 0;
   uint32_t candPeakUs = 0;
   bool candConfirm = false;
+  float strokeStrengthHeld = 0.0f;  // poprawka 2.2: pelna sila ostatniego odepchniecia (0..100), do rekordu
 
   // Kadencja: ring bufor odstepow (ms) do sredniej ruchomej.
   uint16_t cadenceRing[STROKE_CADENCE_WINDOW];
@@ -1873,8 +1879,12 @@ void imuTask(void*) {
       // Sygnaly techniki v4: przysp. hp w przod, uderzeniowosc (szybka zmiana a),
       // intensywnosc i sila chwilowa (strefy B).
       const float hpAf = hp.update(af, dt, HP_CUTOFF_HZ);
-      const float surgeRaw = (hpAf - previousHp) / dt;
-      previousHp = hpAf;
+      // Poprawka 2.6: surge = pochodna WYGLADZONEGO przyspieszenia w przod, bez
+      // podwojnego rozniczkowania hpAf (ktore wzmacnialo szum). Najpierw LP na af,
+      // potem jedna roznica, na koncu to samo wygladzanie surgeFilter co wczesniej.
+      const float afLpNow = afLp.update(af, dt, SURGE_LP_CUTOFF_HZ);
+      const float surgeRaw = (afLpNow - previousAfLp) / dt;
+      previousAfLp = afLpNow;
       const float surge = surgeFilter.update(surgeRaw, dt, SURGE_LP_CUTOFF_HZ);
       const float intensity = 100.0f * fminf(1.0f,
           INTENSITY_ACC_WEIGHT * fmaxf(0.0f, hpAf) / INTENSITY_ACC_REF_G +
@@ -1934,6 +1944,7 @@ void imuTask(void*) {
                                          STROKE_W_IMPULSE * normImpulse +
                                          STROKE_W_SURGE * normSurge);
               strokeStrength = clampFloat(strokeStrength, 0.0f, 100.0f);
+              strokeStrengthHeld = strokeStrength; // poprawka 2.2: zapamietaj pelna sile do rekordu
               strokePhaseMs = clampFloat((candPeakUs - candStartUs) * 0.001f, 0.0f, 150.0f);
 
               // Kadencja: srednia ruchoma z N ostatnich odstepow (ms).
@@ -1981,10 +1992,10 @@ void imuTask(void*) {
       record.accNorm_mg = clampU16(accNorm * 1000.0f);
       record.lean_cdeg = clampI16(relLean * 100.0f);
       record.intensity_x10 = clampU16(intensity * 10.0f);
-      record.strokeStrength_x10 = clampU16(strengthInstant * 10.0f);
+      record.strokeStrength_x10 = clampU16(strokeStrengthHeld * 10.0f); // poprawka 2.2: pelna sila (peak+impuls+surge), nie chwilowa
       record.cadenceMs = clampU16(cadenceCount ? (float)(cadenceSumMs / cadenceCount) : 0.0f);
       record.surge_dps10 = clampI16(surge * 10.0f);
-      record.intensitySmooth_x10 = clampI16(intensityLive * 10.0f);
+      record.intensitySmooth_x10 = clampU16(intensityLive * 10.0f); // poprawka 2.3: pole bez znaku (0..1000)
       record.strokePhaseMs = strokePeak ? (uint8_t)clampU16(strokePhaseMs) : 0;
       record.flags = 0;
       if (idle) record.flags |= FLAG_IDLE;
