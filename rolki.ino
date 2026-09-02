@@ -178,10 +178,12 @@ const uint8_t DEVICE_SIDE = 2;               // 0=nieokreslona, 1=lewa, 2=prawa
 const char* DEVICE_SIDE_NAME = "R";          // nazwa strony do naglowka/dashboardu
 
 // ---------------------------------------------------------------------------
-// Format NORMAL: RIMU04/PNT. Rozmiar rekordu: 32 B (v4).
-// RAW LAB: RRAW02/RWL ma ten sam naglowek i wlasny rekord 48 B.
-// Stare pliki RIMU03/RRAW01 (.pnt/.rwl) NIE sa otwierane przez dashboard —
-// analizuje je zewnętrzny parser (v3 + v4).
+// Format NORMAL: magic "RIMU04", formatVersion=4, rekord 32 B (SampleRecord).
+// RAW LAB:       magic "RRAW02", formatVersion=4, rekord 48 B (RawLabRecord).
+// Obie generacje v4 dziela ten sam naglowek 64 B; formatVersion=4 dla obu, a
+// format rozroznia magic ("RIMU04"/"RRAW02"). Rozmiar rekordu jest zapisany
+// jawnie w naglowku (pole recordBytes) dla obu formatow (poprawka 2.1).
+// Stare pliki RIMU03/RRAW01 (.pnt/.rwl) obsluguje wylacznie zewnetrzny parser.
 // ---------------------------------------------------------------------------
 struct __attribute__((packed)) SessionHeader {
   char magic[8];
@@ -195,15 +197,15 @@ struct __attribute__((packed)) SessionHeader {
   int8_t verticalAxis, verticalSign;
   int8_t rollGyroAxis, rollGyroSign;
   float gyroBiasX, gyroBiasY, gyroBiasZ;
-  uint32_t reserved;
+  uint32_t recordBytes;  // rozmiar pojedynczego rekordu w bajtach (poprawka 2.1: dawne "reserved", teraz wypelniane dla obu formatow)
   // --- meta v4 ---
   uint8_t side;          // 0=nieokreslona, 1=lewa, 2=prawa
   uint8_t zoneVersion;   // 2 = strefy wg sily odepchniecia (strefy B)
   uint8_t reservedByte;
   uint8_t reservedByte2;
-  float refPeakG;        // referencja szczytu przysp. dla sily (0.55 g)
-  float refImpulseGs;    // referencja calki impulsu (0.05 g*s)
-  float refSurgeGps;     // referencja uderzeniowosci (45 g/s)
+  float refPeakG;        // referencja szczytu przysp. dla sily (STROKE_REF_PEAK_G)
+  float refImpulseGs;    // referencja calki impulsu (STROKE_REF_IMPULSE_GS)
+  float refSurgeGps;     // referencja uderzeniowosci (STROKE_REF_SURGE_GPS)
   uint8_t pad0, pad1;    // wyrownanie do 64 B
 };
 
@@ -2106,8 +2108,12 @@ bool startSessionNow() {
   if (!logFile) { setError("OPEN LOG FAILED"); return false; }
 
   SessionHeader header = {};
-  strncpy(header.magic, activeSessionMode == SESSION_MODE_RAW_LAB ? "RRAW02" : "RIMU04", sizeof(header.magic) - 1);
-  header.formatVersion = activeSessionMode == SESSION_MODE_RAW_LAB ? 2 : 4;
+  // Poprawka 2.1: pelne, bezpieczne kopiowanie 8-bajtowego magic (jawny NUL),
+  // spojny formatVersion=4 dla obu formatow generacji v4 (format rozroznia magic).
+  const char* magicStr = activeSessionMode == SESSION_MODE_RAW_LAB ? "RRAW02" : "RIMU04";
+  memset(header.magic, 0, sizeof(header.magic));
+  for (size_t i = 0; i < sizeof(header.magic) && magicStr[i]; ++i) header.magic[i] = magicStr[i];
+  header.formatVersion = 4;
   header.headerBytes = sizeof(SessionHeader);
   header.sessionId = sessionId;
   header.startMillis = millis();
@@ -2117,7 +2123,8 @@ bool startSessionNow() {
   header.verticalAxis = VERTICAL_AXIS; header.verticalSign = VERTICAL_SIGN;
   header.rollGyroAxis = ROLL_GYRO_AXIS; header.rollGyroSign = ROLL_GYRO_SIGN;
   header.gyroBiasX = gyroBiasX; header.gyroBiasY = gyroBiasY; header.gyroBiasZ = gyroBiasZ;
-  header.reserved = activeSessionMode == SESSION_MODE_RAW_LAB ? sizeof(RawLabRecord) : 0;
+  // Poprawka 2.1: rozmiar rekordu zapisany jawnie dla OBU formatow (dawniej 0 dla NORMAL).
+  header.recordBytes = activeSessionMode == SESSION_MODE_RAW_LAB ? sizeof(RawLabRecord) : sizeof(SampleRecord);
   // Meta v4: strona rolki, strefy B, referencje sily.
   header.side = DEVICE_SIDE;
   header.zoneVersion = 2;
