@@ -225,7 +225,7 @@ struct __attribute__((packed)) SampleRecord {
   uint16_t strokeStrength_x10;  // SILA odepchniecia 0..100 (x10)
   uint16_t cadenceMs;           // aktualny rytm kadencji (ms)
   int16_t surge_dps10;          // uderzeniowosc (g/s *10)
-  uint8_t strokePhaseMs;        // czas trwania impulsu odepchniecia (ms)
+  uint8_t strokePhaseMs;        // czas TRWANIA aktywnej fazy odepchniecia (ms) — poprawka 2.8
   uint8_t flags;
   uint8_t side;                 // strona rolki (0/1/2)
   uint8_t reserved;
@@ -1845,6 +1845,7 @@ void imuTask(void*) {
   uint32_t candPeakUs = 0;
   bool candConfirm = false;
   float strokeStrengthHeld = 0.0f;  // poprawka 2.2: pelna sila ostatniego odepchniecia (0..100), do rekordu
+  uint32_t candLastActiveUs = 0;    // poprawka 2.8: ostatnia chwila aktywnego impulsu (do czasu trwania fazy)
 
   // Kadencja: ring bufor odstepow (ms) do sredniej ruchomej.
   uint16_t cadenceRing[STROKE_CADENCE_WINDOW];
@@ -1936,12 +1937,15 @@ void imuTask(void*) {
           candImpulse = fabsf(hpAf) * dt;
           candStartUs = nowUs;
           candPeakUs = nowUs;
+          candLastActiveUs = nowUs; // poprawka 2.8: start fazy aktywnej
           candConfirm = (surge >= STROKE_CONFIRM_SURGE_GPS || hpAf >= STROKE_CONFIRM_HP_G);
         }
       } else {
         if (hpAf > candPeakHp) { candPeakHp = hpAf; candPeakUs = nowUs; }
         if (surge > candPeakSurge) candPeakSurge = surge;
         candImpulse += fabsf(hpAf) * dt;
+        // Poprawka 2.8: dopoki sygnal jest powyzej progu wejscia, faza trwa.
+        if (surge >= STROKE_ENTER_SURGE_GPS || hpAf >= STROKE_ENTER_HP_G) candLastActiveUs = nowUs;
         if (!candConfirm && (surge >= STROKE_CONFIRM_SURGE_GPS || hpAf >= STROKE_CONFIRM_HP_G)) {
           candConfirm = true;
         }
@@ -1959,7 +1963,9 @@ void imuTask(void*) {
                                          STROKE_W_SURGE * normSurge);
               strokeStrength = clampFloat(strokeStrength, 0.0f, 100.0f);
               strokeStrengthHeld = strokeStrength; // poprawka 2.2: zapamietaj pelna sile do rekordu
-              strokePhaseMs = clampFloat((candPeakUs - candStartUs) * 0.001f, 0.0f, 150.0f);
+              // Poprawka 2.8: rzeczywisty czas TRWANIA fazy aktywnej (start -> ostatnia
+              // chwila powyzej progu), a nie tylko czas narastania do szczytu.
+              strokePhaseMs = clampFloat((candLastActiveUs - candStartUs) * 0.001f, 0.0f, 250.0f);
 
               // Kadencja: srednia ruchoma z N ostatnich odstepow (ms).
               const uint16_t intervalMs =
