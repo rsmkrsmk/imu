@@ -34,3 +34,29 @@ python3 measure.py            # (ścieżki do .rwl ustawione w skrypcie)
 > Uwaga: pliki `ses00038.rwl` / `ses00040.rwl` w repo to nagrania ze STAREGO
 > firmware (format RRAW01/RIMU03). Do weryfikacji poprawek 2.1/2.7/2.8 potrzebne
 > są nowe nagrania z firmware po zmianach (RRAW02, formatVersion 4).
+
+
+---
+
+## Pakowanie strumieniowe „w locie" (.pzs / .rzs)
+
+Firmware może zapisywać sesję od razu skompresowaną blokowym LZSS (magic
+`RIMUZ1`/`RRAWZ1`). Specyfikacja formatu: `FORMAT_streaming_compression.md`.
+
+Narzędzia:
+- **`unpack_stream.py`** — rozpakowuje plik `.pzs`/`.rzs` do zwykłego `.pnt`/`.rwl`
+  (przywraca magic `RIMU04`/`RRAW02`), gotowego dla `parse_v4.py`. Odporny na ucięty
+  ostatni blok (pomija go, resztę odzyskuje).
+  ```bash
+  python3 unpack_stream.py ../ses000NN.rzs        # -> ../ses000NN.rwl
+  python3 parse_v4.py ../ses000NN.rwl             # analiza jak zwykle
+  ```
+- **`sim_stream_lzss.py`** — enkoder blokowy (dobór rozmiaru bloku, symulacja kompresji).
+- **`e2e_stream_test.py`** — test end-to-end: pakuje realny `.rwl` tak jak firmware,
+  rozpakowuje parserem i porównuje bajt-w-bajt. Potwierdza poprawność obiegu.
+  ```bash
+  cd analiza && python3 e2e_stream_test.py ../ses00045.rwl
+  ```
+
+Zweryfikowano: round-trip bajt-w-bajt na `ses00045`; kompresja ciała ~68% (jazda);
+po ucięciu pliku w środku bloku parser odzyskuje wszystko poza ostatnim blokiem (~0.5 s).
