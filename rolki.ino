@@ -2317,7 +2317,128 @@ const char PHONE_DASHBOARD_HTML[] PROGMEM = R"HTML(
 <meta name="color-scheme" content="dark">
 <title>Rolki Silesia · IMU Live</title>
 <style>
-:root{--bg:#090b10;--surface:#12161e;--surface2:#191f2a;--line:#2a3342;--text:#f6f8fb;--muted:#9ba7b7;--red:#ef233c;--red2:#9b1124;--orange:#ff8c42;--cyan:#56cfe1;--yellow:#ffd166;--green:#5dd39e;--danger:#ff5c5c;--shadow:0 14px 40px rgba(0,0,0,.28)}*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:radial-gradient(circle at top right,#26111b 0,var(--bg) 34rem);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;line-height:1.35}.app{max-width:760px;margin:auto;padding:calc(12px + env(safe-area-inset-top)) 14px calc(146px + env(safe-area-inset-bottom))}.hero{background:linear-gradient(135deg,#250d14,#11151e 62%);border:1px solid #65303b;border-radius:18px;padding:16px;box-shadow:var(--shadow)}.eyebrow{color:var(--red);font-size:11px;font-weight:800;letter-spacing:.18em}.heroRow{display:flex;justify-content:space-between;align-items:end;gap:10px;margin-top:3px}.hero h1{font-size:clamp(23px,7vw,31px);line-height:1;margin:0;letter-spacing:-.04em}.network{font-size:11px;color:var(--muted);text-align:right}.status{display:flex;align-items:center;gap:7px;margin-top:14px;padding:9px 10px;border-radius:10px;background:#080a0e;border:1px solid var(--line);font-size:12px;font-weight:800}.pulse{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(93,211,158,.12)}.status.recording .pulse{background:var(--red);box-shadow:0 0 0 5px rgba(239,35,60,.14);animation:pulse 1.2s infinite}.status.error .pulse{background:var(--danger)}@keyframes pulse{50%{transform:scale(1.35);opacity:.55}}.nav{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;margin:13px 0}.nav button{min-height:42px;padding:5px 2px;background:#11151d;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.03em}.nav button.active{background:#32121a;border-color:var(--red);color:var(--text)}button{font:inherit;cursor:pointer}button:focus-visible{outline:3px solid var(--cyan);outline-offset:2px}button:disabled{opacity:.38;cursor:not-allowed}.view{display:none}.view.active{display:block}.sectionTitle{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:18px 2px 8px}.sectionTitle h2{font-size:13px;margin:0;letter-spacing:.08em}.sectionTitle span{font-size:11px;color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.metric{min-height:104px;padding:13px;border:1px solid var(--line);border-radius:15px;background:linear-gradient(145deg,var(--surface2),var(--surface));box-shadow:0 8px 20px rgba(0,0,0,.13)}.metric.primary{background:linear-gradient(145deg,#35131b,#1a141a);border-color:#8a3343}.label{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.1em}.value{display:block;font-size:clamp(29px,10vw,42px);font-weight:850;line-height:1.05;letter-spacing:-.05em;margin-top:8px}.unit{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0}.metricSub{font-size:11px;color:var(--muted);margin-top:7px;min-height:15px}.metricSub.strong{color:var(--orange);font-weight:800}.wide{grid-column:1/-1}.split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.miniMetric{background:#0c1016;border:1px solid #202938;border-radius:10px;padding:9px}.miniMetric b{display:block;font-size:17px;margin-top:2px}.miniMetric span{font-size:10px;color:var(--muted);letter-spacing:.06em}.statusGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.statusGrid div{padding:8px;background:#0c1016;border:1px solid #202938;border-radius:10px}.statusGrid strong{display:block;font-size:16px}.statusGrid small{font-size:9px;color:var(--muted);letter-spacing:.08em}.zones{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:10px}.zone{height:34px;display:grid;place-items:center;border-radius:8px;font-size:10px;font-weight:800;color:#0a0a0a}.z0{background:#d9e2ec}.z1{background:#7bdff2}.z2{background:#ffd166}.z3{background:#ff9f1c}.z4{background:#ef476f;color:#fff}.zoneCard{padding:10px;background:#0c1016;border:1px solid var(--line);border-radius:12px;margin-top:6px}.zoneBar{position:relative;height:26px;display:flex;border-radius:9px;overflow:hidden;border:1px solid #2a3342}.zoneSeg{height:100%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#0a0a0a;min-width:0;overflow:hidden}.zoneSeg.z0{flex:15}.zoneSeg.z1{flex:15}.zoneSeg.z2{flex:20}.zoneSeg.z3{flex:20}.zoneSeg.z4{flex:30;color:#fff}.zoneCursor{position:absolute;top:-5px;bottom:-5px;width:3px;background:#fff;border-radius:2px;box-shadow:0 0 10px rgba(255,255,255,.95);transition:left .25s}.zoneScale{display:flex;margin-top:4px;font-size:9px;color:var(--muted)}.zoneScale span{flex:1 1 0;width:0;text-align:center;overflow:hidden}.zoneNow{margin-top:9px;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}.zoneNow .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}.zoneNow strong{color:var(--text);font-size:15px}.logCard{display:flex;gap:10px;align-items:stretch;background:#0c1016;border:1px solid var(--line);border-radius:12px;padding:10px}.logBadge{min-width:54px;display:grid;place-items:center;border-radius:9px;font-size:11px;font-weight:800;text-align:center;padding:4px 6px}.logBadge.ok{background:#12301f;color:var(--green);border:1px solid #1d4b30}.logBadge.warn{background:#33260f;color:var(--yellow);border:1px solid #4a3a12}.logBadge.bad{background:#3a1220;color:var(--red);border:1px solid #5a1a2b}.logChips{display:flex;flex-wrap:wrap;gap:7px;margin-top:0}.logChips span{background:#11151d;border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:10px;color:var(--muted)}.logChips b{color:var(--text);font-size:14px}.logWarns{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}.logWarns span{padding:3px 8px;border-radius:7px;font-size:9px;font-weight:800}.logWarns .warn{background:#33260f;color:var(--yellow)}.logWarns .bad{background:#3a1220;color:var(--red)}.fileToolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}.hint.small{margin-top:8px}.packedTag{display:inline-block;background:#12301f;color:var(--green);border:1px solid #1d4b30;border-radius:6px;padding:0 5px;font-size:9px;font-weight:800;margin-left:6px;vertical-align:1.5px}.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}.tab{min-height:38px;background:#11151d;border:1px solid var(--line);border-radius:10px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em}.tab.active{background:#202735;border-color:#536176;color:var(--text)}.chartPanel{display:none}.chartPanel.active{display:block}.chart{border:1px solid var(--line);border-radius:15px;background:var(--surface);padding:11px;margin-bottom:9px;box-shadow:0 8px 20px rgba(0,0,0,.11)}.chartHeader{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}.chartHeader h3{font-size:11px;margin:0;letter-spacing:.09em}.chartHeader span{font-size:10px;color:var(--muted)}canvas{display:block;width:100%;height:178px;border-radius:10px;background:#0c1016}.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;color:var(--muted);font-size:10px}.legend i{display:inline-block;width:8px;height:8px;border-radius:8px;margin-right:4px}.phaseNotice{border:1px solid #765424;background:#241d12;color:#ffe4a3;border-radius:10px;padding:9px;font-size:10px;margin-top:8px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:13px;box-shadow:0 8px 20px rgba(0,0,0,.11)}.panelTitle{font-size:11px;font-weight:850;letter-spacing:.1em;color:var(--muted);margin-bottom:10px}.fileList{display:grid;gap:7px}.fileRow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px;background:#0c1016;border:1px solid #202938;border-radius:11px}.fileName{font-size:12px;font-weight:800;overflow-wrap:anywhere}.fileMeta,.hint{color:var(--muted);font-size:11px;margin-top:3px;line-height:1.45}.fileActions{display:flex;gap:5px;flex-shrink:0}.mini{min-height:32px;padding:0 8px;background:#293243;border:0;border-radius:8px;color:#fff;font-size:10px;font-weight:800}.mini.danger,.danger{background:#6d1522}.warning{margin-top:11px;padding:10px;background:#251118;border:1px solid #6d2634;border-radius:10px;color:#ffc0c8;font-size:11px}.diagGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.diagGrid div{padding:9px;background:#0c1016;border:1px solid #202938;border-radius:10px;color:var(--muted);font-size:10px}.diagGrid b{display:block;color:var(--text);font-size:16px;margin-top:2px}.mountValue{font-size:clamp(22px,7vw,30px);font-weight:850;letter-spacing:-.04em}.actionDock{position:fixed;z-index:5;bottom:0;left:0;right:0;padding:10px max(14px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));background:linear-gradient(transparent,#090b10 30%)}.actions{max-width:760px;margin:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.actions button{min-height:48px;border:0;border-radius:12px;background:#273040;color:#fff;font-size:11px;font-weight:850}.actions .primary{background:var(--red)}.actions .stop{background:#7c1523}.note{min-height:18px;margin:12px 2px 0;text-align:center;font-size:11px;color:var(--muted)}.livestrip{display:flex;gap:2px;margin:4px 0 10px;padding:3px;background:#0c1016;border:1px solid #202938;border-radius:10px;overflow:hidden}.err{color:var(--danger)}.good{color:var(--green)}@media(min-width:600px){.metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.metric.wide{grid-column:span 2}.actions{grid-template-columns:repeat(3,1fr)}}@media(prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto!important}}
+:root{--bg:#080a0f;--surface:#121722;--surface2:#1a2130;--line:#28313f;--line2:#323d4d;--text:#f4f7fb;--muted:#93a1b4;--muted2:#6c7a8c;--red:#ff2d55;--red2:#9b1124;--orange:#ff8c42;--cyan:#4cd6ea;--yellow:#ffd166;--green:#4ade9b;--danger:#ff5c5c;--z0:#c3d0de;--z1:#5ec7e8;--z2:#ffd166;--z3:#ff9f1c;--z4:#ff3d71;--accent:var(--red);--accentSoft:rgba(255,45,85,.14);--shadow:0 18px 46px rgba(0,0,0,.42);--radius:18px}
+*{box-sizing:border-box}html{background:var(--bg)}
+body{margin:0;background:radial-gradient(120% 60% at 100% -8%,rgba(255,45,85,.14) 0,transparent 46%),radial-gradient(90% 50% at -10% 4%,rgba(76,214,234,.08) 0,transparent 42%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;line-height:1.35;-webkit-text-size-adjust:100%}
+.app{max-width:820px;margin:auto;padding:calc(12px + env(safe-area-inset-top)) 14px calc(150px + env(safe-area-inset-bottom))}
+.hero{position:relative;overflow:hidden;background:linear-gradient(135deg,rgba(255,45,85,.16),rgba(18,23,34,.6) 60%),var(--surface);border:1px solid var(--line2);border-radius:var(--radius);padding:15px 16px;box-shadow:var(--shadow)}
+.hero::after{content:"";position:absolute;inset:0;background:radial-gradient(60% 120% at 92% 0,rgba(255,45,85,.22),transparent 60%);pointer-events:none}
+.eyebrow{color:var(--red);font-size:11px;font-weight:800;letter-spacing:.2em}
+.heroRow{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:3px;position:relative;z-index:1}
+.hero h1{font-size:clamp(24px,7vw,32px);line-height:1;margin:0;letter-spacing:-.045em;font-weight:850}
+.network{font-size:11px;color:var(--muted);text-align:right;line-height:1.5}
+.network b{color:var(--text);font-weight:700}
+.status{display:flex;align-items:center;gap:8px;margin-top:14px;padding:10px 12px;border-radius:12px;background:rgba(0,0,0,.34);border:1px solid var(--line);font-size:12px;font-weight:800;letter-spacing:.02em;position:relative;z-index:1}
+.pulse{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(74,222,155,.14);flex-shrink:0}
+.status.recording{border-color:rgba(255,45,85,.4)}
+.status.recording .pulse{background:var(--red);box-shadow:0 0 0 5px rgba(255,45,85,.16);animation:pulse 1.2s infinite}
+.status.error .pulse{background:var(--danger);box-shadow:0 0 0 5px rgba(255,92,92,.16)}
+@keyframes pulse{50%{transform:scale(1.4);opacity:.5}}
+.nav{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:13px 0;position:sticky;top:calc(env(safe-area-inset-top));z-index:4}
+.nav button{min-height:46px;padding:6px 2px;background:rgba(18,23,34,.86);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:12px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em;transition:background .15s,color .15s,border-color .15s}
+.nav button.active{background:linear-gradient(160deg,rgba(255,45,85,.32),rgba(255,45,85,.12));border-color:var(--red);color:#fff;box-shadow:0 6px 16px rgba(255,45,85,.18)}
+button{font:inherit;cursor:pointer}
+button:focus-visible{outline:3px solid var(--cyan);outline-offset:2px}
+button:disabled{opacity:.36;cursor:not-allowed}
+.view{display:none;animation:fade .22s ease}.view.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.sectionTitle{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:18px 2px 9px}
+.sectionTitle h2{font-size:12px;margin:0;letter-spacing:.12em;color:var(--muted);font-weight:800;text-transform:uppercase}
+.sectionTitle span{font-size:11px;color:var(--muted2)}
+/* HERO metryka SILY — dominujaca, kolor wg strefy */
+.bigCard{position:relative;overflow:hidden;border-radius:var(--radius);border:1px solid var(--line2);padding:16px 18px 18px;background:linear-gradient(160deg,var(--accentSoft),rgba(18,23,34,.5) 62%),var(--surface);box-shadow:var(--shadow);transition:border-color .4s,background .4s}
+.bigCard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--accent);box-shadow:0 0 20px var(--accent);transition:background .4s,box-shadow .4s}
+.bigTop{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.bigLabel{color:var(--muted);font-size:11px;font-weight:800;letter-spacing:.14em}
+.bigZone{font-size:12px;font-weight:850;letter-spacing:.06em;color:var(--accent);padding:5px 11px;border:1px solid var(--accent);border-radius:999px;white-space:nowrap;transition:color .4s,border-color .4s}
+.bigValue{display:flex;align-items:baseline;gap:6px;margin-top:6px}
+.bigValue #strokeStrength{font-size:clamp(64px,24vw,104px);font-weight:850;line-height:.9;letter-spacing:-.05em}
+.bigValue .unit{font-size:20px;color:var(--muted);font-weight:700}
+.gauge{height:12px;border-radius:999px;background:#0b0e14;border:1px solid var(--line);margin-top:12px;overflow:hidden;position:relative}
+.gaugeFill{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--z1),var(--z2) 45%,var(--z3) 72%,var(--z4));transition:width .3s ease}
+/* pary metryk drugorzednych */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.metric{position:relative;min-height:100px;padding:13px 14px;border:1px solid var(--line);border-radius:15px;background:linear-gradient(150deg,var(--surface2),var(--surface));box-shadow:0 10px 22px rgba(0,0,0,.16)}
+.metric.primary{background:linear-gradient(150deg,rgba(255,45,85,.12),var(--surface));border-color:var(--line2)}
+.label{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.12em}
+.value{display:block;font-size:clamp(30px,10vw,44px);font-weight:850;line-height:1.02;letter-spacing:-.05em;margin-top:8px}
+.unit{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0}
+.metricSub{font-size:11px;color:var(--muted);margin-top:7px;min-height:15px}
+.metricSub.strong{color:var(--orange);font-weight:800}
+.wide{grid-column:1/-1}
+.split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.miniMetric{background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:11px;padding:10px}
+.miniMetric b{display:block;font-size:18px;margin-top:3px;font-weight:800}
+.miniMetric span{font-size:10px;color:var(--muted);letter-spacing:.06em}
+.statusGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.statusGrid div{padding:8px;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:10px}
+.statusGrid strong{display:block;font-size:16px}
+.statusGrid small{font-size:9px;color:var(--muted);letter-spacing:.08em}
+.zones{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:10px}
+.zone{height:34px;display:grid;place-items:center;border-radius:8px;font-size:10px;font-weight:800;color:#0a0a0a}
+.z0{background:var(--z0)}.z1{background:var(--z1)}.z2{background:var(--z2)}.z3{background:var(--z3)}.z4{background:var(--z4);color:#fff}
+.zoneCard{padding:11px;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:13px;margin-top:6px}
+.zoneBar{position:relative;height:28px;display:flex;border-radius:9px;overflow:hidden;border:1px solid var(--line2)}
+.zoneSeg{height:100%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#0a0a0a;min-width:0;overflow:hidden}
+.zoneSeg.z0{flex:15}.zoneSeg.z1{flex:15}.zoneSeg.z2{flex:20}.zoneSeg.z3{flex:20}.zoneSeg.z4{flex:30;color:#fff}
+.zoneCursor{position:absolute;top:-5px;bottom:-5px;width:3px;background:#fff;border-radius:2px;box-shadow:0 0 12px rgba(255,255,255,.98);transition:left .25s}
+.zoneScale{display:flex;margin-top:5px;font-size:9px;color:var(--muted2)}
+.zoneScale span{flex:1 1 0;width:0;text-align:center;overflow:hidden}
+.zoneNow{margin-top:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.zoneNow .dot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
+.zoneNow strong{color:var(--text);font-size:15px}
+.logCard{display:flex;gap:10px;align-items:stretch;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:13px;padding:11px}
+.logBadge{min-width:56px;display:grid;place-items:center;border-radius:10px;font-size:11px;font-weight:800;text-align:center;padding:4px 6px}
+.logBadge.ok{background:rgba(74,222,155,.12);color:var(--green);border:1px solid rgba(74,222,155,.32)}
+.logBadge.warn{background:rgba(255,209,102,.1);color:var(--yellow);border:1px solid rgba(255,209,102,.3)}
+.logBadge.bad{background:rgba(255,45,85,.12);color:var(--red);border:1px solid rgba(255,45,85,.34)}
+.logChips{display:flex;flex-wrap:wrap;gap:7px}
+.logChips span{background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:9px;padding:5px 10px;font-size:10px;color:var(--muted)}
+.logChips b{color:var(--text);font-size:14px}
+.logWarns{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.logWarns span{padding:3px 8px;border-radius:7px;font-size:9px;font-weight:800}
+.logWarns .warn{background:rgba(255,209,102,.12);color:var(--yellow)}
+.logWarns .bad{background:rgba(255,45,85,.14);color:var(--red)}
+.fileToolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.hint.small{margin-top:8px}
+.packedTag{display:inline-block;background:rgba(74,222,155,.12);color:var(--green);border:1px solid rgba(74,222,155,.32);border-radius:6px;padding:0 5px;font-size:9px;font-weight:800;margin-left:6px;vertical-align:1.5px}
+.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}
+.tab{min-height:40px;background:rgba(18,23,34,.9);border:1px solid var(--line);border-radius:11px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em;transition:background .15s,color .15s,border-color .15s}
+.tab.active{background:linear-gradient(160deg,rgba(76,214,234,.2),rgba(76,214,234,.06));border-color:var(--cyan);color:#fff}
+.chartPanel{display:none}.chartPanel.active{display:block}
+.chart{border:1px solid var(--line);border-radius:15px;background:var(--surface);padding:12px;margin-bottom:10px;box-shadow:0 10px 22px rgba(0,0,0,.14)}
+.chartHeader{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:9px}
+.chartHeader h3{font-size:11px;margin:0;letter-spacing:.1em;font-weight:800}
+.chartHeader span{font-size:10px;color:var(--muted2)}
+canvas{display:block;width:100%;height:180px;border-radius:11px;background:#0b0e14}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:9px;color:var(--muted);font-size:10px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:9px;margin-right:4px;vertical-align:0}
+.phaseNotice{border:1px solid #765424;background:#241d12;color:#ffe4a3;border-radius:10px;padding:9px;font-size:10px;margin-top:8px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:14px;box-shadow:0 10px 22px rgba(0,0,0,.14)}
+.panelTitle{font-size:11px;font-weight:850;letter-spacing:.1em;color:var(--muted);margin-bottom:10px}
+.fileList{display:grid;gap:7px}
+.fileRow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:12px}
+.fileName{font-size:12px;font-weight:800;overflow-wrap:anywhere}
+.fileMeta,.hint{color:var(--muted);font-size:11px;margin-top:3px;line-height:1.45}
+.fileActions{display:flex;gap:5px;flex-shrink:0}
+.mini{min-height:34px;padding:0 10px;background:var(--line2);border:0;border-radius:9px;color:#fff;font-size:10px;font-weight:800}
+.mini.danger,.danger{background:var(--red2)}
+.warning{margin-top:11px;padding:11px;background:rgba(255,45,85,.08);border:1px solid rgba(255,45,85,.28);border-radius:11px;color:#ffc0c8;font-size:11px}
+.diagGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.diagGrid div{padding:10px;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:11px;color:var(--muted);font-size:10px;letter-spacing:.04em}
+.diagGrid b{display:block;color:var(--text);font-size:16px;margin-top:3px;letter-spacing:-.01em}
+.mountValue{font-size:clamp(24px,8vw,34px);font-weight:850;letter-spacing:-.04em}
+.actionDock{position:fixed;z-index:5;bottom:0;left:0;right:0;padding:10px max(14px,env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));background:linear-gradient(transparent,var(--bg) 34%)}
+.actions{max-width:820px;margin:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.actions button{min-height:50px;border:1px solid var(--line2);border-radius:13px;background:rgba(26,33,48,.94);color:#fff;font-size:11px;font-weight:850;letter-spacing:.02em;line-height:1.15}
+.actions .primary{background:linear-gradient(160deg,var(--red),var(--red2));border-color:transparent}
+.actions .stop{background:linear-gradient(160deg,#8c1a2b,#5c0f1c);border-color:transparent}
+.note{min-height:18px;margin:12px 2px 0;text-align:center;font-size:11px;color:var(--muted)}
+.livestrip{display:flex;gap:2px;margin:4px 0 10px;padding:4px;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.err{color:var(--danger)}.good{color:var(--green)}
+@media(min-width:600px){.metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.metric.wide{grid-column:span 4}.bigValue #strokeStrength{font-size:clamp(72px,14vw,116px)}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
@@ -2337,7 +2458,19 @@ const char PHONE_DASHBOARD_HTML[] PROGMEM = R"HTML(
 </nav>
 
 <section id="livePanel" class="view active">
-  <div class="sectionTitle"><h2>STREFY SILY ODPCHNIECIA</h2><span id="zonesText">LEKKA MOCNA</span></div>
+  <div class="sectionTitle"><h2>Sila odepchniecia teraz</h2><span id="time">00:00</span></div>
+  <div id="bigCard" class="bigCard">
+    <div class="bigTop"><span class="bigLabel">SILA ODEPCHNIECIA</span><span id="strokeZoneCard" class="bigZone">--</span></div>
+    <div class="bigValue"><span id="strokeStrength">--</span><span class="unit">/ 100</span></div>
+    <div class="gauge"><div id="strengthGauge" class="gaugeFill"></div></div>
+  </div>
+
+  <div class="duo">
+    <article class="metric primary"><span class="label">KADENCJA</span><span class="value"><span id="cadence">--</span><span class="unit">/min</span></span><div class="metricSub"><span id="cadenceMs">--</span> ms / odepchniecie</div></article>
+    <article class="metric primary"><span class="label">MOC (proxy)</span><span class="value"><span id="power">--</span><span class="unit">pkt</span></span><div class="metricSub">sila x kadencja</div></article>
+  </div>
+
+  <div class="sectionTitle"><h2>Strefy sily</h2><span id="zonesText">rozklad sesji</span></div>
   <div id="zoneMap" class="zoneCard">
     <div class="zoneBar">
       <div class="zoneSeg z0"><b>--</b></div>
@@ -2348,34 +2481,31 @@ const char PHONE_DASHBOARD_HTML[] PROGMEM = R"HTML(
       <div id="zoneCursor" class="zoneCursor"></div>
     </div>
     <div class="zoneScale"><span>0</span><span>15</span><span>30</span><span>50</span><span>70</span><span>100</span></div>
-    <div class="zoneNow"><span id="zoneDotNow" class="dot" style="background:#d9e2ec"></span>TERAZ: <strong id="zoneNow">--</strong><span id="strokeZone" style="margin-left:auto;font-weight:800">--</span></div>
+    <div class="zoneNow"><span id="zoneDotNow" class="dot" style="background:#c3d0de"></span>TERAZ: <strong id="zoneNow">--</strong><span id="strokeZone" style="margin-left:auto;font-weight:800">--</span></div>
   </div>
 
-  <div class="sectionTitle"><h2>OSTATNIE 120 s</h2><span>1 pole = 1 s · kolor = strefa</span></div>
+  <div class="sectionTitle"><h2>Ostatnie 120 s</h2><span>1 pole = 1 s · kolor = strefa</span></div>
   <div id="liveStrip" class="livestrip"></div>
 
-  <div class="sectionTitle"><h2>SILA ODPCHNIECIA TERAZ</h2><span id="time">00:00</span></div>
+  <div class="sectionTitle"><h2>Rytm i faza</h2><span>metryki wzgledne</span></div>
   <div class="metrics">
-    <article class="metric primary"><span class="label">SILA ODPCHNIECIA</span><span class="value"><span id="strokeStrength">--</span><span class="unit">/100</span></span><div class="metricSub strong" id="strokeZoneCard">--</div></article>
-    <article class="metric primary"><span class="label">KADENCJA</span><span class="value"><span id="cadence">--</span><span class="unit">/min</span></span><div class="metricSub"><span id="cadenceMs">--</span> ms / odepchniecie</div></article>
-    <article class="metric primary"><span class="label">MOC (proxy)</span><span class="value"><span id="power">--</span><span class="unit">pkt</span></span><div class="metricSub">sila x kadencja</div></article>
-    <article class="metric"><span class="label">INTENSYWNOSC</span><span class="value"><span id="intensity">--</span><span class="unit">/100</span></span><div class="metricSub" id="intensityPct">chwilowa</div></article>
-  </div>
-
-  <div class="sectionTitle"><h2>RYTM I FAZA</h2><span>METRYKI WZGLEDNE</span></div>
-  <div class="metrics">
-    <article class="metric"><span class="label">ODPCHNIECIA</span><span class="value" id="strokesPerMin">--</span><div class="metricSub">/ min · wszystkich <span id="strokes">0</span></div></article>
+    <article class="metric"><span class="label">ODEPCHNIECIA</span><span class="value" id="strokesPerMin">--</span><div class="metricSub">/ min · wszystkich <span id="strokes">0</span></div></article>
     <article class="metric"><span class="label">SILNE ODB.</span><span class="value" id="strokesStrongPct">--</span><div class="metricSub">% z wszystkich</div></article>
-    <article class="metric"><span class="label">FAZA ODPCHNIECIA</span><span class="value"><span id="phase">--</span><span class="unit">ms</span></span><div class="metricSub strong">czaz impulsu</div></article>
-    <article class="metric"><span class="label">UDERZENIOWOSC</span><span class="value"><span id="surge">--</span><span class="unit">g/s</span></span><div class="metricSub">gwałtowność ruchu</div></article>
+    <article class="metric"><span class="label">FAZA ODEPCHNIECIA</span><span class="value"><span id="phase">--</span><span class="unit">ms</span></span><div class="metricSub strong">czas trwania impulsu</div></article>
+    <article class="metric"><span class="label">UDERZENIOWOSC</span><span class="value"><span id="surge">--</span><span class="unit">g/s</span></span><div class="metricSub">gwaltownosc ruchu</div></article>
   </div>
 
-  <div class="sectionTitle"><h2>AKTYWNOSC SESJI</h2><span>SESJA · strona <span id="side">R</span></span></div>
+  <div class="sectionTitle"><h2>Aktywnosc sesji</h2><span>strona <span id="side">R</span></span></div>
   <div class="metrics">
     <article class="metric wide"><span class="label">SESJA</span><div class="split"><div class="miniMetric"><span>AKTYWNE</span><b id="active">--%</b></div><div class="miniMetric"><span>BEZRUCH</span><b id="static">--%</b></div><div class="miniMetric"><span>SILA P90/P95</span><b id="strPct">--</b></div><div class="miniMetric"><span>INT P90/P95</span><b id="intPct">--</b></div></div></article>
   </div>
 
-  <div class="sectionTitle"><h2>JAKOSC LOGU</h2><span id="file">-</span></div>
+  <div class="sectionTitle"><h2>Intensywnosc</h2><span id="intensityPct">chwilowa</span></div>
+  <div class="metrics">
+    <article class="metric wide"><span class="label">INTENSYWNOSC CHWILOWA</span><span class="value"><span id="intensity">--</span><span class="unit">/100</span></span></article>
+  </div>
+
+  <div class="sectionTitle"><h2>Jakosc logu</h2><span id="file">-</span></div>
   <div class="logCard">
     <div id="logBadge" class="logBadge ok">LOG OK</div>
     <div style="flex:1">
@@ -2412,10 +2542,11 @@ const char PHONE_DASHBOARD_HTML[] PROGMEM = R"HTML(
 <script>
 const by=id=>document.getElementById(id);const set=(id,v)=>by(id).textContent=v;const two=v=>String(v).padStart(2,'0');const fmt=t=>{t=Math.max(0,Math.floor(t||0));return two(t/60|0)+':'+two(t%60)};const num=(v,d=0)=>Number(v||0).toFixed(d);let phoneStatus={},historyPoints=[],activeView='live',activeChart='intensity',historyBusy=false,filesBusy=false;
 function calibrationStatusText(s){if(s.calibration_active)return ' · KALIBRACJA '+(s.calibration_stable||0)+' OK / '+(s.calibration_rejected||0)+' RUCH';if(s.countdown&&s.calibration_complete)return ' · KALIBRACJA OK';return ''}function mark(s){let e=by('state');e.className='status'+(s.recording?' recording':'');e.innerHTML='<i class="pulse"></i><span>'+s.state+(s.recording?' · REJESTRACJA AKTYWNA':calibrationStatusText(s))+'</span>'}
-function updateZones(z,str){let values=z||[];by('zoneMap').querySelectorAll('.zoneSeg b').forEach((el,i)=>el.textContent=num(values[i],0)+'%');let cur=by('zoneCursor');cur.style.left=Math.min(100,Math.max(0,Number(str||0)))+'%';let c=zoneOf(str);by('zoneDotNow').style.background=zoneColors[c];by('zoneNow').textContent=num(str||0,0)+' / 100'}function updateQuality(s){let grade='ok',label='LOG OK',warns=[];if((s.qdrop||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('qdrop '+s.qdrop)}if((s.gap8||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('gap8 '+s.gap8)}if((s.bad||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('bad '+s.bad)}if((s.sat||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('sat '+s.sat)}if(!warns.length&&(s.queue||0)>448){grade='warn';label='KOLJKA PELNA';warns.push('kolejka '+s.queue+'/512')}let badge=by('logBadge');badge.className='logBadge '+grade;badge.textContent=label;by('logWarns').innerHTML=warns.map(x=>{let c=(x.indexOf('qdrop')===0||x.indexOf('bad')===0)?'bad':'warn';return '<span class="'+c+'">'+x+'</span>'}).join('')}
+const zoneSoft=['rgba(195,208,222,.16)','rgba(94,199,232,.16)','rgba(255,209,102,.16)','rgba(255,159,28,.16)','rgba(255,61,113,.18)'];
+function updateZones(z,str){let values=z||[];by('zoneMap').querySelectorAll('.zoneSeg b').forEach((el,i)=>el.textContent=num(values[i],0)+'%');let v=Math.min(100,Math.max(0,Number(str||0)));let cur=by('zoneCursor');cur.style.left=v+'%';let c=zoneOf(str);by('zoneDotNow').style.background=zoneColors[c];by('zoneNow').textContent=num(str||0,0)+' / 100';let g=by('strengthGauge');if(g)g.style.width=v+'%';let root=document.documentElement;root.style.setProperty('--accent',zoneColors[c]);root.style.setProperty('--accentSoft',zoneSoft[c])}function updateQuality(s){let grade='ok',label='LOG OK',warns=[];if((s.qdrop||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('qdrop '+s.qdrop)}if((s.gap8||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('gap8 '+s.gap8)}if((s.bad||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('bad '+s.bad)}if((s.sat||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('sat '+s.sat)}if(!warns.length&&(s.queue||0)>448){grade='warn';label='KOLJKA PELNA';warns.push('kolejka '+s.queue+'/512')}let badge=by('logBadge');badge.className='logBadge '+grade;badge.textContent=label;by('logWarns').innerHTML=warns.map(x=>{let c=(x.indexOf('qdrop')===0||x.indexOf('bad')===0)?'bad':'warn';return '<span class="'+c+'">'+x+'</span>'}).join('')}
 function zoneFromStrength(v){let n=Number(v||0);return n<15?0:n<30?1:n<50?2:n<70?3:4}
 function drawLiveStrip(){let el=by('liveStrip');if(!el){return}let html='';let pts=historyPoints.slice(-120);pts.forEach(p=>{let z=zoneFromStrength(p[2]);let c=zoneColors[z];let mark=p[6]&&p[6]>0?';outline:1px solid #fff':'';html+='<span style="background:'+c+';flex:1;min-width:3px;height:26px;border-radius:2px;'+mark+';display:inline-block" title="'+p[0]+'s · sily '+p[2]+'"></span>'});el.innerHTML=html||'<div class="hint">Brak danych 1 s...</div>'}
-async function getStatus(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw new Error();let s=await r.json();phoneStatus=s;mark(s);set('time',fmt(s.time_s));set('strokeStrength',num(s.stroke_strength,0));set('strokeZone',s.stroke_zone_name||'--');set('cadence',num(s.cadence_per_min,1));set('cadenceMs',num(s.cadence_ms,0)+' ms');set('power',num(s.power_proxy,1));set('intensity',num(s.intensity,0));set('intensityPct','P90 '+num(s.intensity_p90,0));set('strokesPerMin',num(s.strokes_per_min,1));set('strokes',s.strokes||0);set('strokesStrongPct',num(s.strokes_strong_pct,0)+'%');set('phase',num(s.strength_phase_ms,0));set('surge',num(s.surge_gps,1)+' g/s');set('active',num(s.active_pct,0)+'%');set('static',num(s.idle_pct,0)+'%');set('side',s.side||'R');set('strPct',num(s.stroke_p90,0)+' / '+num(s.stroke_p95,0));set('intPct',num(s.intensity_p90,0)+' / '+num(s.intensity_p95,0));updateZones(s.zones,s.stroke_strength);set('rate',num(s.rate_hz,0)+' Hz');set('queue',s.queue+' / 512');set('qdrop',s.qdrop);set('strokeZoneCard',s.stroke_zone_name||'--');set('lean',num(s.lean_deg,1));updateQuality(s);set('file',s.file||'-');set('sessionMode',(s.session_mode||'NORMAL')+' · '+(s.session_format||'RIMU04'));set('files',s.files);set('free',s.free_kb);set('clients',s.clients);by('startDefault').disabled=!s.can_start;by('startMax').disabled=!s.can_start;by('startRawDefault').disabled=!s.can_start;by('startRawMax').disabled=!s.can_start;by('stop').disabled=!s.recording;by('cancel').disabled=!s.countdown;updateWebAvailability(s);set('note','Odświeżono · '+new Date().toLocaleTimeString())}catch(e){let n=by('note');n.textContent='Brak polaczenia z urzadzeniem';n.className='note err'}}
+async function getStatus(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw new Error();let s=await r.json();phoneStatus=s;mark(s);set('time',fmt(s.time_s));set('strokeStrength',num(s.stroke_strength,0));set('strokeZone',s.stroke_zone_name||'--');set('cadence',num(s.cadence_per_min,1));set('cadenceMs',num(s.cadence_ms,0));set('power',num(s.power_proxy,1));set('intensity',num(s.intensity,0));set('intensityPct','P90 '+num(s.intensity_p90,0));set('strokesPerMin',num(s.strokes_per_min,1));set('strokes',s.strokes||0);set('strokesStrongPct',num(s.strokes_strong_pct,0)+'%');set('phase',num(s.strength_phase_ms,0));set('surge',num(s.surge_gps,1));set('active',num(s.active_pct,0)+'%');set('static',num(s.idle_pct,0)+'%');set('side',s.side||'R');set('strPct',num(s.stroke_p90,0)+' / '+num(s.stroke_p95,0));set('intPct',num(s.intensity_p90,0)+' / '+num(s.intensity_p95,0));updateZones(s.zones,s.stroke_strength);set('rate',num(s.rate_hz,0)+' Hz');set('queue',s.queue+' / 512');set('qdrop',s.qdrop);set('strokeZoneCard',s.stroke_zone_name||'--');set('lean',num(s.lean_deg,1));updateQuality(s);set('file',s.file||'-');set('sessionMode',(s.session_mode||'NORMAL')+' · '+(s.session_format||'RIMU04'));set('files',s.files);set('free',s.free_kb);set('clients',s.clients);by('startDefault').disabled=!s.can_start;by('startMax').disabled=!s.can_start;by('startRawDefault').disabled=!s.can_start;by('startRawMax').disabled=!s.can_start;by('stop').disabled=!s.recording;by('cancel').disabled=!s.countdown;updateWebAvailability(s);set('note','Odświeżono · '+new Date().toLocaleTimeString())}catch(e){let n=by('note');n.textContent='Brak polaczenia z urzadzeniem';n.className='note err'}}
 async function act(cmd){if(cmd==='stop'&&!confirm('Zatrzymac bieżąca sesje?'))return;try{let r=await fetch('/api/action?cmd='+cmd,{method:'POST',cache:'no-store'}),j=await r.json();set('note',j.message||'Polecenie wyslane');by('note').className=r.ok&&j.ok?'note good':'note err';setTimeout(getStatus,250)}catch(e){set('note','Nie mozna wyslac polecenia');by('note').className='note err'}}
 function showView(view){activeView=view;['live','rhythm','zones','files','mount','diag'].forEach(name=>{by(name+'Panel').classList.toggle('active',name===view);by(name+'Tab').classList.toggle('active',name===view)});if(view==='files')loadFiles();if(view==='mount')loadMount();if(view==='diag')loadDiagnostics();if(view==='rhythm')setTimeout(drawActiveCharts,25);if(view==='zones')setTimeout(drawZoneCharts,25)}
 function showCharts(which){activeChart=which;['intensity','phase','motion'].forEach(name=>{by(name+'Panel').classList.toggle('active',name===which);by(name==='intensity'?'dynTab':name==='phase'?'phaseTab':'paramsTab').classList.toggle('active',name===which)});setTimeout(drawActiveCharts,25)}
