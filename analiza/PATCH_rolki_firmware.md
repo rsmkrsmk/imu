@@ -179,3 +179,35 @@ tylko wygląd, hierarchia i drobne poprawki treści.
 - Brak sekwencji `)HTML"` w treści (literał C++ nienaruszony); wszystkie `id` używane w JS
   mają swój element; znaczniki zbalansowane (div 96, span 91, article 17, section 6, button 20).
 - 8 poprawek firmware (2.1–2.9) nienaruszonych. CRLF zachowane.
+
+
+---
+
+# Weryfikacja na sprzęcie (nowy firmware wgrany)
+
+Testy wykonane z urządzeniem w ręce, po wgraniu firmware z tego PR. Nagrania
+`ses00043.rwl` (bezruch 63 s) i `ses00045.rwl` (10 machnięć ręką 39 s) w repo.
+
+> Uwaga: opis nagrań był zamieniony — plik **43 to bezruch**, a **45 to 10 machnięć**
+> (potwierdzone: 43 ma af_max 0.01 g / idle 100%; 45 ma af_max 7.5 g i 10 pików).
+
+## Wyniki
+
+| Test | Poprawka | Wynik na danych | Status |
+|------|----------|-----------------|--------|
+| Nagłówek | 2.1 | magic `RRAW02`, formatVersion **4**, headerBytes **64**, recordBytes **48**; body dzieli się na całkowitą liczbę rekordów (10998 / 6762) | ✅ |
+| Referencje w nagłówku | 2.5 | refPeakG/refImpulseGs/refSurgeGps = **5.0 / 0.30 / 130.0** | ✅ |
+| Mapowanie osi | — | F=X, V=Y, L=Z; przy bezruchu rawAy ≈ +995 mg (grawitacja na Y) | ✅ |
+| Dryf przechyłu | 2.7 | LEAN w 63 s bezruchu: **od −0.0° do +0.1°** (praktycznie zero dryfu) | ✅ |
+| Bezruch/idle | 2.9 | idle **100%** w nagraniu bezruchu; 0 fałszywych odepchnięć | ✅ |
+| Detektor odepchnięć | 2.5 / 2.8 | **dokładnie 10/10** machnięć wykrytych, odstępy 3.2–3.75 s, brak dublowania | ✅ |
+
+## Obserwacje do domknięcia na jeździe
+- Machnięcia ręką były gwałtowniejsze niż realne odepchnięcie (af do 7.5 g,
+  surge do 101 g/s) → siła przypięła się do 95–100 na wszystkich 10. To spodziewane;
+  rozkład skali 0–100 i kadencję ~40–70/min trzeba potwierdzić na **nagraniu z jazdy**.
+- Faza odepchnięcia (2.8) wyszła 100–125 ms — sensownie, ale realne wartości
+  pokaże dopiero jazda.
+
+**Wniosek:** poprawki 2.1, 2.5, 2.7, 2.8, 2.9 potwierdzone na żywym sprzęcie.
+Pozostała kalibracja skali siły/kadencji wymaga nagrań w ruchu.
