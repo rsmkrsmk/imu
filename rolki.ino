@@ -170,8 +170,13 @@ const float ACTIVE_GYRO_THRESHOLD_DPS = 60.0f;
 
 // Wzgledny przechyl: ograniczony, aby nie udawac kata absolutnego.
 const float REL_LEAN_LIMIT_DEG = 75.0f;
-const float LEAN_BASE_CORRECTION = 0.004f;
+// Poprawka 2.7: mocniejsza korekta grawitacyjna (bazowa 0.004->0.010) ogranicza
+// akumulacje dryfu zyroskopu podczas dlugiej jazdy; MAX bez zmian (bezruch).
+const float LEAN_BASE_CORRECTION = 0.010f;
 const float LEAN_MAX_CORRECTION = 0.030f;
+// Poprawka 2.7: powolny zanik integratora przechylu przy bezruchu (na sekunde),
+// zeruje dryf skumulowany w postojach bez udawania kata absolutnego.
+const float LEAN_IDLE_DECAY_PER_S = 0.5f;
 
 // Strona rolki: czujnik zamontowany na prawej rolce (R=2) do czasu ustawienia.
 const uint8_t DEVICE_SIDE = 2;               // 0=nieokreslona, 1=lewa, 2=prawa
@@ -1908,6 +1913,13 @@ void imuTask(void*) {
       relLean += rollRate * dt;
       relLean = wrapDeg180(relLean);
       relLean += correction * wrapDeg180(leanAccRel - relLean);
+      // Poprawka 2.7: przy bezruchu (brak ruchu liniowego i obrotowego) powoli
+      // sciagaj integrator ku kalibracji, kasujac skumulowany dryf zyroskopu.
+      const float restFactor = 1.0f - fmaxf(linearMotion, angularMotion);
+      if (restFactor > 0.0f) {
+        const float decay = clampFloat(LEAN_IDLE_DECAY_PER_S * restFactor * dt, 0.0f, 1.0f);
+        relLean += decay * (leanAccRel - relLean);
+      }
       relLean = clampFloat(relLean, -REL_LEAN_LIMIT_DEG, REL_LEAN_LIMIT_DEG);
 
       // --- DETEKTOR ODPCHNIECIA (STROKE) v4 ---
