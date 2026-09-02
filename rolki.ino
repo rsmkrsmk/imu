@@ -57,6 +57,10 @@ const char* LEGACY_SESSION_FILE_EXTENSION = ".rim";
 // Archiwum RLE po zapisie sesji: .pz dla PNT/RIM, .rz dla RAW LAB.
 const char* COMPRESSED_EXTENSION = ".pz";
 const char* COMPRESSED_RAW_EXTENSION = ".rz";
+// Pakowanie strumieniowe "w locie" (blokowy LZSS): osobne rozszerzenia plikow,
+// aby odroznic je od archiwow po fakcie. .pzs dla NORMAL, .rzs dla RAW LAB.
+const char* STREAM_COMPRESSED_EXTENSION = ".pzs";
+const char* STREAM_COMPRESSED_RAW_EXTENSION = ".rzs";
 const uint32_t RAW_LAB_MIN_FREE_BYTES_TO_START = 192UL * 1024UL;
 const uint8_t LITTLEFS_MAX_OPEN_FILES = 10;
 const uint32_t SERIAL_BAUD = 115200;
@@ -438,6 +442,9 @@ File logFile;
 // przekraczaly bezpieczny margines stosu i powodowaly reset tuz po START.
 RawLabRecord writerRawBlock[WRITER_BLOCK_RECORDS];
 SampleRecord writerNormalBlock[WRITER_BLOCK_RECORDS];
+// Bufory pakowania strumieniowego (globalne — nie na stosie writera, jak bloki wyzej).
+// src: max 64 rekordy * 48 B = 3072 B; dst: zapas na naglowek + ewentualny narzut.
+uint8_t streamCompDst[WRITER_BLOCK_RECORDS * sizeof(RawLabRecord) + 64];
 QueueHandle_t sampleQueue = nullptr;  // Zawsze przenosi RawLabRecord; NORMAL zapisuje jego czesc PNT.
 TaskHandle_t imuTaskHandle = nullptr;
 TaskHandle_t writerTaskHandle = nullptr;
@@ -518,6 +525,9 @@ uint8_t menuIndex = 0;
 uint8_t fileMenuIndex = 0;
 SessionMode selectedSessionMode = SESSION_MODE_NORMAL;
 SessionMode activeSessionMode = SESSION_MODE_NORMAL;
+// Pakowanie strumieniowe "w locie": wybrane/aktywne dla biezacej sesji.
+bool selectedCompression = false;
+bool activeCompression = false;
 char deleteFilename[32] = "";
 uint32_t lastExportProgressPercent = 101;
 uint32_t lastDisplayMs = 0;
@@ -758,7 +768,8 @@ void setError(const char* message) {
 bool hasSessionExtension(const char* path) {
   static const char* const extensions[] = {
     SESSION_FILE_EXTENSION, RAW_LAB_FILE_EXTENSION, LEGACY_SESSION_FILE_EXTENSION,
-    COMPRESSED_EXTENSION, COMPRESSED_RAW_EXTENSION
+    COMPRESSED_EXTENSION, COMPRESSED_RAW_EXTENSION,
+    STREAM_COMPRESSED_EXTENSION, STREAM_COMPRESSED_RAW_EXTENSION
   };
   const size_t n = strlen(path);
   for (size_t i = 0; i < sizeof(extensions) / sizeof(extensions[0]); ++i) {
@@ -768,12 +779,16 @@ bool hasSessionExtension(const char* path) {
   return false;
 }
 
+static bool hasExt(const char* path, const char* ext) {
+  const size_t n = strlen(path), len = strlen(ext);
+  return n >= len && strcmp(path + n - len, ext) == 0;
+}
+
 bool isPackedFilename(const char* path) {
-  const size_t n = strlen(path);
-  const size_t lenPz = strlen(COMPRESSED_EXTENSION);
-  const size_t lenRz = strlen(COMPRESSED_RAW_EXTENSION);
-  return (n >= lenPz && strcmp(path + n - lenPz, COMPRESSED_EXTENSION) == 0) ||
-         (n >= lenRz && strcmp(path + n - lenRz, COMPRESSED_RAW_EXTENSION) == 0);
+  // Za "spakowane" uznajemy archiwa po fakcie (.pz/.rz) oraz pliki skompresowane
+  // strumieniowo w locie (.pzs/.rzs) — tych nie pakujemy ponownie.
+  return hasExt(path, COMPRESSED_EXTENSION) || hasExt(path, COMPRESSED_RAW_EXTENSION) ||
+         hasExt(path, STREAM_COMPRESSED_EXTENSION) || hasExt(path, STREAM_COMPRESSED_RAW_EXTENSION);
 }
 
 void copyLittleFsPath(char* destination, size_t size, const char* source) {
@@ -911,6 +926,54 @@ static const uint32_t LZSS_BLOCK = 2048;
 
 static inline uint8_t lzssHistAt(const uint8_t* hist, uint32_t writeIdx, uint32_t dist) {
   return hist[(writeIdx + LZSS_WINDOW - dist) % (LZSS_WINDOW + 1)];
+}
+
+// ---------------------------------------------------------------------------
+// Pakowanie strumieniowe "w locie": enkoder LZSS pojedynczego bloku w RAM.
+// Slownik zerowany na starcie bloku (dopasowania szukane tylko w tym bloku,
+// max LZSS_WINDOW wstecz), dzieki czemu awaria psuje tylko ostatni blok.
+// Ten sam format tokenow co packFileLzss (off 11-bit, dl 3..34, grupa 8 decyzji).
+// Zwraca liczbe bajtow zapisanych do 'dst' albo 0, gdy nie miesci sie w dstCap
+// (wowczas wolajacy zapisze blok jako surowy). 'src'/'dst' to bufory w RAM.
+static uint32_t lzssEncodeBlock(const uint8_t* src, uint32_t srcLen,
+                                uint8_t* dst, uint32_t dstCap) {
+  uint32_t di = 0, pos = 0;
+  uint8_t groupByte = 0; uint32_t groupCount = 0;
+  uint8_t pend[16]; uint32_t pendLen = 0;
+  auto emit = [&](uint8_t byte) -> bool { if (di >= dstCap) return false; dst[di++] = byte; return true; };
+  auto flushGroup = [&]() -> bool {
+    if (groupCount == 0) return true;
+    if (!emit(groupByte)) return false;
+    for (uint32_t i = 0; i < pendLen; ++i) if (!emit(pend[i])) return false;
+    groupByte = 0; groupCount = 0; pendLen = 0;
+    return true;
+  };
+  while (pos < srcLen) {
+    const uint32_t maxDist = pos < LZSS_WINDOW ? pos : LZSS_WINDOW;
+    const uint32_t avail = srcLen - pos;
+    const uint32_t limit = avail < 34 ? avail : 34;
+    uint32_t bestOff = 0, bestLen = 0;
+    if (limit >= 3) {
+      for (uint32_t off = 1; off <= maxDist; ++off) {
+        if (src[pos - off] != src[pos]) continue;
+        uint32_t len = 1;
+        while (len < limit && (off - len) >= 1 && src[pos - off + len] == src[pos + len]) ++len;
+        if (len > bestLen) { bestLen = len; bestOff = off; if (len == limit) break; }
+      }
+    }
+    if (bestLen >= 3) {
+      groupByte |= (uint8_t)(1u << (7 - groupCount));
+      pend[pendLen++] = (uint8_t)(bestOff & 0xFF);
+      pend[pendLen++] = (uint8_t)((((bestOff >> 8) & 0x07) << 5) | (bestLen - 3));
+      pos += bestLen;
+    } else {
+      pend[pendLen++] = src[pos];
+      pos += 1;
+    }
+    if (++groupCount == 8) { if (!flushGroup()) return 0; }
+  }
+  if (!flushGroup()) return 0;
+  return di;
 }
 
 bool packFileLzss(const char* inPath, const char* outPath) {
@@ -1764,6 +1827,26 @@ void writerTask(void*) {
     const bool rawLab = activeSessionMode == SESSION_MODE_RAW_LAB;
     const size_t expected = records * (rawLab ? sizeof(RawLabRecord) : sizeof(SampleRecord));
     const uint8_t* payload = rawLab ? (const uint8_t*)writerRawBlock : (const uint8_t*)writerNormalBlock;
+    if (activeCompression) {
+      // Blok skompresowany: [u16 rawLen][u16 compLen][u8 flags][dane].
+      // flags bit0: 1=LZSS, 0=surowy (fallback gdy niescisliwe / nie miesci sie).
+      const uint32_t rawLen = (uint32_t)expected;
+      uint32_t compLen = lzssEncodeBlock(payload, rawLen, streamCompDst, sizeof(streamCompDst));
+      uint8_t flags = 1;
+      const uint8_t* dataPtr = streamCompDst;
+      if (compLen == 0 || compLen >= rawLen) { // fallback: zapisz surowo
+        flags = 0; compLen = rawLen; dataPtr = payload;
+      }
+      uint8_t bh[5] = { (uint8_t)(rawLen & 0xFF), (uint8_t)((rawLen >> 8) & 0xFF),
+                        (uint8_t)(compLen & 0xFF), (uint8_t)((compLen >> 8) & 0xFF), flags };
+      if (logFile.write(bh, 5) != 5 || logFile.write(dataPtr, compLen) != compLen) {
+        portENTER_CRITICAL(&statsMux); stats.writerErrorCount++; portEXIT_CRITICAL(&statsMux);
+        writerFailed = true;
+        return false;
+      }
+      portENTER_CRITICAL(&statsMux); stats.recordsWritten += records; portEXIT_CRITICAL(&statsMux);
+      return true;
+    }
     const size_t written = logFile.write(payload, expected);
     if (written != expected) {
       portENTER_CRITICAL(&statsMux); stats.writerErrorCount++; portEXIT_CRITICAL(&statsMux);
@@ -2120,10 +2203,17 @@ bool startSessionNow() {
   if (sampleQueue || !imuTaskDone || !writerTaskDone) { setError("TASKS NOT READY"); return false; }
 
   activeSessionMode = selectedSessionMode;
+  activeCompression = selectedCompression;
   sessionId = nextSessionId();
   if (!sessionId) { setError("SESSION ID WRITE FAIL"); return false; }
-  snprintf(currentFilename, sizeof(currentFilename), "/ses%05lu%s", (unsigned long)sessionId,
-           sessionExtensionForMode(activeSessionMode));
+  const char* ext;
+  if (activeCompression) {
+    ext = activeSessionMode == SESSION_MODE_RAW_LAB ? STREAM_COMPRESSED_RAW_EXTENSION
+                                                    : STREAM_COMPRESSED_EXTENSION;
+  } else {
+    ext = sessionExtensionForMode(activeSessionMode);
+  }
+  snprintf(currentFilename, sizeof(currentFilename), "/ses%05lu%s", (unsigned long)sessionId, ext);
   discardCurrentLogOnClose = false;
   logFile = LittleFS.open(currentFilename, FILE_WRITE);
   if (!logFile) { setError("OPEN LOG FAILED"); return false; }
@@ -2131,7 +2221,11 @@ bool startSessionNow() {
   SessionHeader header = {};
   // Poprawka 2.1: pelne, bezpieczne kopiowanie 8-bajtowego magic (jawny NUL),
   // spojny formatVersion=4 dla obu formatow generacji v4 (format rozroznia magic).
-  const char* magicStr = activeSessionMode == SESSION_MODE_RAW_LAB ? "RRAW02" : "RIMU04";
+  // Magic: skompresowane strumieniowo maja wlasny magic (RIMUZ1/RRAWZ1),
+  // aby parser od razu wiedzial, ze plik jest ciagiem blokow LZSS.
+  const char* magicStr = activeCompression
+      ? (activeSessionMode == SESSION_MODE_RAW_LAB ? "RRAWZ1" : "RIMUZ1")
+      : (activeSessionMode == SESSION_MODE_RAW_LAB ? "RRAW02" : "RIMU04");
   memset(header.magic, 0, sizeof(header.magic));
   for (size_t i = 0; i < sizeof(header.magic) && magicStr[i]; ++i) header.magic[i] = magicStr[i];
   header.formatVersion = 4;
@@ -2149,8 +2243,10 @@ bool startSessionNow() {
   // Meta v4: strona rolki, strefy B, referencje sily.
   header.side = DEVICE_SIDE;
   header.zoneVersion = 2;
-  header.reservedByte = 0;
-  header.reservedByte2 = 0;
+  // Pakowanie strumieniowe: reservedByte=flaga kompresji (bit0=1 LZSS blokowy),
+  // reservedByte2=liczba rekordow na blok (parser nie musi zgadywac).
+  header.reservedByte = activeCompression ? 1 : 0;
+  header.reservedByte2 = activeCompression ? (uint8_t)WRITER_BLOCK_RECORDS : 0;
   header.refPeakG = STROKE_REF_PEAK_G;
   header.refImpulseGs = STROKE_REF_IMPULSE_GS;
   header.refSurgeGps = STROKE_REF_SURGE_GPS;
@@ -2531,7 +2627,7 @@ canvas{display:block;width:100%;height:180px;border-radius:11px;background:#0b0e
   <article class="chart"><div class="chartHeader"><h3>UDZIAL MOCNE + BARDZO MOCNE</h3><span>OKNA CZASOWE</span></div><canvas id="zoneStrongChart"></canvas><div class="hint">Udzial probek o sile odepchniecia w strefach 3+4. To porownanie intensywnosci, nie moc fizyczna.</div></article>
 </section>
 
-<section id="filesPanel" class="view"><div class="sectionTitle"><h2>PLIKI SESJI</h2><span>POZA NAGRYWANIEM</span></div><div class="panel"><div class="fileToolbar"><button id="packAll" class="mini" type="button" onclick="packAll()">PAKUJ</button><button id="deleteAll" class="mini danger" type="button" onclick="deleteAllFiles()">USUN WSZYSTKIE</button></div><div id="fileList" class="fileList">Wczytywanie plikow...</div><div class="hint small">PAKUJ kompresuje pliki bezposrednio na urzadzeniu (skompresowane: <strong>.pz</strong> dla PNT/RIM, <strong>.rz</strong> dla RAW LAB), a oryginal zostaje usuniety. Pobrany plik rozpakujesz na PC: <strong>rozpakuj.ps1</strong>.</div><div class="warning">Kasowanie jest nieodwracalne. Lista, pobieranie i pakowanie są blokowane podczas nagrywania, aby nie kolidować z zapisem do LittleFS.</div></div></section>
+<section id="filesPanel" class="view"><div class="sectionTitle"><h2>PLIKI SESJI</h2><span>POZA NAGRYWANIEM</span></div><div class="panel"><div class="fileToolbar"><button id="zipToggle" class="mini" type="button" onclick="toggleZip()">PAKOWANIE W LOCIE: --</button><button id="packAll" class="mini" type="button" onclick="packAll()">PAKUJ</button><button id="deleteAll" class="mini danger" type="button" onclick="deleteAllFiles()">USUN WSZYSTKIE</button></div><div id="fileList" class="fileList">Wczytywanie plikow...</div><div class="hint small"><strong>PAKOWANIE W LOCIE</strong> zapisuje od razu maly plik (.pzs/.rzs) i wydluza sesje; wlacz przed startem. PAKUJ kompresuje istniejace pliki po fakcie (.pz/.rz), a oryginal zostaje usuniety. Pobrany plik rozpakujesz na PC: <strong>rozpakuj.ps1</strong>.</div><div class="warning">Kasowanie jest nieodwracalne. Lista, pobieranie i pakowanie są blokowane podczas nagrywania, aby nie kolidować z zapisem do LittleFS.</div></div></section>
 
 <section id="mountPanel" class="view"><div class="sectionTitle"><h2>MONTAZ CZUJNIKA</h2><span>TYLKO POZA SESJA</span></div><div class="panel"><div class="hint">X+ → PRZOD / JAZDA · Y+ → NIEBO · Z+ → LEWA STRONA</div><div id="mountValues" class="mountValue">F--.- L--.- U--.-</div><div id="mountHint" class="hint">Czekam na odczyt IMU...</div></div></section>
 
@@ -2564,7 +2660,8 @@ function drawZoneStrong(){let a=setupChart('zoneStrongChart'),x=a.x,w=a.w,h=a.h,
 function drawZoneCharts(){drawZoneShare();drawZoneTimeline();drawZoneStrong();set('zonesInfo',historyPoints.length?historyPoints.length+' / 120 s':'BRAK DANYCH')}
 async function getHistory(){if(historyBusy)return;historyBusy=true;try{let r=await fetch('/api/history',{cache:'no-store'});if(!r.ok)throw new Error();let d=await r.json();historyPoints=d.points||[];set('historyInfo',historyPoints.length?historyPoints.length+' / 120 s':'BRAK DANYCH');if(activeView==='rhythm')drawActiveCharts();if(activeView==='zones')drawZoneCharts();if(activeView==='live')drawLiveStrip()}catch(e){}finally{historyBusy=false}}
 function esc(v){return String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}function sizeText(b){return b>=1048576?(b/1048576).toFixed(2)+' MB':(b/1024).toFixed(1)+' KB'}
-function updateWebAvailability(s){by('deleteAll').disabled=!s.can_manage_files;if(by('packAll'))by('packAll').disabled=!s.can_manage_files;document.querySelectorAll('[data-pack]').forEach(b=>b.disabled=!s.can_manage_files);if(activeView==='files'&&s.can_files)loadFiles()}
+function updateWebAvailability(s){by('deleteAll').disabled=!s.can_manage_files;if(by('packAll'))by('packAll').disabled=!s.can_manage_files;document.querySelectorAll('[data-pack]').forEach(b=>b.disabled=!s.can_manage_files);let zt=by('zipToggle');if(zt){zt.textContent='PAKOWANIE W LOCIE: '+(s.compression?'WL':'WYL');zt.style.background=s.compression?'#12301f':'';zt.disabled=!s.can_start}if(activeView==='files'&&s.can_files)loadFiles()}
+async function toggleZip(){try{await postAction('toggle_zip',{});setTimeout(getStatus,150)}catch(e){}}
 async function postAction(cmd,extra){let q=new URLSearchParams(Object.assign({cmd},extra||{})),r=await fetch('/api/action?'+q.toString(),{method:'POST',cache:'no-store'}),j=await r.json();set('note',j.message||'Brak odpowiedzi');by('note').className=r.ok&&j.ok?'note good':'note err';if(!r.ok||!j.ok)throw new Error(j.message||'Blad');return j}
 async function loadFiles(){if(filesBusy)return;let list=by('fileList');if(!phoneStatus.can_files){list.textContent='Lista plikow jest zablokowana podczas nagrywania.';return}filesBusy=true;try{let r=await fetch('/api/files',{cache:'no-store'});if(!r.ok)throw new Error();let d=await r.json(),files=d.files||[];if(!files.length){list.textContent='Brak zapisanych sesji.';return}list.innerHTML=files.map(f=>{let n=esc(f.name);return '<div class="fileRow"><div><div class="fileName">'+n+(f.packed?' <i class="packedTag">PAK</i>':'')+'</div><div class="fileMeta">'+sizeText(f.bytes)+'</div></div><div class="fileActions">'+(f.packed?'':'<button class="mini" data-pack="'+n+'">PAKUJ</button>')+'<button class="mini" data-download="'+n+'">POBIERZ</button><button class="mini danger" data-delete="'+n+'">USUN</button></div></div>'}).join('')+(d.truncated?'<div class="hint">Pokazano pierwsze '+files.length+' z '+d.total+' plikow.</div>':'');list.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>downloadFile(b.dataset.download));list.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteFile(b.dataset.delete));list.querySelectorAll('[data-pack]').forEach(b=>b.onclick=()=>packFile(b.dataset.pack))}catch(e){list.textContent='Nie mozna pobrac listy plikow.'}finally{filesBusy=false}}
 function downloadFile(name){if(phoneStatus.can_files)window.location='/api/download?file='+encodeURIComponent(name)}async function deleteFile(name){if(!phoneStatus.can_manage_files||!confirm('Usunac bezpowrotnie '+name+'?'))return;try{await postAction('delete_one',{file:name});setTimeout(()=>{getStatus();loadFiles()},350)}catch(e){}}async function deleteAllFiles(){if(!phoneStatus.can_manage_files||!confirm('USUNAC WSZYSTKIE sesje? Operacji nie mozna cofnac.'))return;let code=prompt('Wpisz ERASE aby potwierdzic:');if(code!=='ERASE')return;try{await postAction('delete_all',{confirm:'ERASE'});setTimeout(()=>{getStatus();loadFiles()},500)}catch(e){}}function packFile(name){if(!confirm('Spakowac (LZSS) plik '+name+'?'))return;postAction('pack_one',{file:name}).then(()=>{getStatus();loadFiles()}).catch(()=>{})}async function packAll(){if(!confirm('Spakowac wszystkie sesje (LZSS)? Oryginaly zostana usuniete po sukcesie.'))return;try{await postAction('pack_all',{});setTimeout(()=>{getStatus();loadFiles()},600)}catch(e){}}
@@ -2676,7 +2773,7 @@ void sendPhoneStatus() {
       "\"rate_hz\":%.2f,\"queue\":%lu,\"qdrop\":%lu,\"gap8\":%lu,\"bad\":%lu,\"sat\":%lu,"
       "\"imu_stalls\":%lu,\"imu_stack_min_free\":%lu,\"writer_stack_min_free\":%lu,"
       "\"side\":\"%s\","
-      "\"session_mode\":\"%s\",\"session_format\":\"%s\",\"file\":\"%s\",\"files\":%u,\"free_kb\":%lu,\"clients\":%u}",
+      "\"session_mode\":\"%s\",\"session_format\":\"%s\",\"file\":\"%s\",\"files\":%u,\"free_kb\":%lu,\"clients\":%u,\"compression\":%s}",
       deviceStateName(state), recording ? "true" : "false", countdown ? "true" : "false",
       phoneCanStartSession() ? "true" : "false", phoneCanListFiles() ? "true" : "false",
       phoneCanManageFiles() ? "true" : "false", (countdown && !countdownCalibration.complete) ? "true" : "false",
@@ -2701,7 +2798,8 @@ void sendPhoneStatus() {
       sessionModeName(state == STATE_RECORDING || state == STATE_STOPPING ? activeSessionMode : selectedSessionMode),
       (state == STATE_RECORDING || state == STATE_STOPPING || state == STATE_START_COUNTDOWN) &&
               (state == STATE_START_COUNTDOWN ? selectedSessionMode : activeSessionMode) == SESSION_MODE_RAW_LAB ? "RRAW02" : "RIMU04",
-      currentFilename, phoneKnownSessionFiles, (unsigned long)phoneKnownFreeKBytes, WiFi.softAPgetStationNum());
+      currentFilename, phoneKnownSessionFiles, (unsigned long)phoneKnownFreeKBytes, WiFi.softAPgetStationNum(),
+      ((state == STATE_RECORDING || state == STATE_STOPPING) ? activeCompression : selectedCompression) ? "true" : "false");
   if (!phoneJsonFits(response, sizeof(response), written)) { sendPhoneJson(500, false, "Status JSON too long"); return; }
   webServer.sendHeader("Cache-Control", "no-store");
   webServer.send(200, "application/json", response);
@@ -2879,6 +2977,11 @@ void handlePhoneAction() {
     else if (command == "start_raw_default") pendingPhoneCommand = PHONE_COMMAND_START_RAW_DEFAULT;
     else pendingPhoneCommand = command == "start_max" ? PHONE_COMMAND_START_MAX : PHONE_COMMAND_START_DEFAULT;
     sendPhoneJson(202, true, command.startsWith("start_raw") ? "Rozpoczynam RAW LAB" : "Rozpoczynam odliczanie");
+  } else if (command == "toggle_zip") {
+    // Przelacznik pakowania strumieniowego "w locie". Obowiazuje od nastepnej sesji.
+    if (!phoneCanStartSession()) { sendPhoneJson(409, false, "Zmiana tylko poza sesja"); return; }
+    selectedCompression = !selectedCompression;
+    sendPhoneJson(200, true, selectedCompression ? "Pakowanie w locie: WLACZONE" : "Pakowanie w locie: WYLACZONE");
   } else if (command == "stop") {
     if (state != STATE_RECORDING) { sendPhoneJson(409, false, "Brak aktywnej sesji"); return; }
     pendingPhoneCommand = PHONE_COMMAND_STOP;
