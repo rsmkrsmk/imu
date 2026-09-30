@@ -142,6 +142,19 @@ const uint32_t STROKE_REFRACTORY_US = 450000; // min. odstep miedzy odepchniecia
 const uint32_t STROKE_WINDOW_US = 120000;     // max. czas okna kandydata (potwierdzenie do ~120 ms)
 const uint8_t STROKE_CADENCE_WINDOW = 12;     // liczba odepchnięć do średniej ruchomej kadencji
 
+// --- Kadencja z RYTMU (autokorelacja) — dokladniejsza niz zliczanie odepchniec ---
+// Obwiednia surge probkowana CADENCE_ENV_HZ, bufor kolowy CADENCE_BUF (~6 s),
+// autokorelacja skanuje lag od MIN do MAX (okres cyklu odepchniecia jednej nogi).
+// Wynik x2 = kadencja KROKU (obie nogi), porownywalna z norma 55-80/min.
+const uint8_t CADENCE_ENV_HZ = 20;            // czestotliwosc obwiedni (probka co 50 ms)
+const uint16_t CADENCE_ENV_PERIOD_US = 50000; // 1/20 s
+const uint8_t CADENCE_BUF = 120;              // 6 s historii obwiedni
+const uint8_t CADENCE_LAG_MIN = 8;            // 0.40 s (okres nogi min -> szybka jazda)
+const uint8_t CADENCE_LAG_MAX = 44;           // 2.20 s (okres nogi max -> wolna jazda)
+const uint32_t CADENCE_CALC_PERIOD_US = 1000000; // przeliczaj raz na sekunde
+const float CADENCE_SUBHARM_RATIO = 0.80f;    // korekta: gdy 2*lag koreluje >80% peak
+const uint8_t CADENCE_MEDIAN_WINDOW = 5;      // mediana z N ostatnich okien (stabilizacja)
+
 // Siła odepchnięcia: suma ważona szczytu przysp., całki impulsu i uderzeniowości.
 const float STROKE_W_PEAK = 0.40f;            // waga szczytu przyspieszenia w przód
 const float STROKE_W_IMPULSE = 0.30f;         // waga całki impulsu (pomiar "pędu")
@@ -406,7 +419,9 @@ struct RuntimeStats {
 
   // Kadencja i moc.
   uint32_t cadenceMsNow;         // aktualny rytm (sr. ruchoma, ms)
-  float cadencePerMin;           // kadencja /min (srednia ruchoma)
+  float cadencePerMin;           // kadencja /min (srednia ruchoma, ze zliczania odepchniec)
+  float strideCadencePerMin;     // KADENCJA KROKU (obie nogi) z rytmu/autokorelacji
+  float legCadencePerMin;        // kadencja tej nogi z rytmu (stride/2)
   float powerProxyNow;           // moc proxy = kadencja * sila / wspolczynnik
   float powerProxyMax;
 
@@ -445,6 +460,11 @@ SampleRecord writerNormalBlock[WRITER_BLOCK_RECORDS];
 // Bufory pakowania strumieniowego (globalne — nie na stosie writera, jak bloki wyzej).
 // src: max 64 rekordy * 48 B = 3072 B; dst: zapas na naglowek + ewentualny narzut.
 uint8_t streamCompDst[WRITER_BLOCK_RECORDS * sizeof(RawLabRecord) + 64];
+
+// Bufor obwiedni surge do autokorelacji kadencji (globalny, uzywany tylko przez imuTask).
+float cadenceEnv[CADENCE_BUF] = {0};
+uint8_t cadenceEnvIdx = 0;
+uint8_t cadenceEnvFilled = 0;
 QueueHandle_t sampleQueue = nullptr;  // Zawsze przenosi RawLabRecord; NORMAL zapisuje jego czesc PNT.
 TaskHandle_t imuTaskHandle = nullptr;
 TaskHandle_t writerTaskHandle = nullptr;
@@ -1906,6 +1926,41 @@ void writerTask(void*) {
 }
 
 // ---------------------------------------------------------------------------
+// Kadencja z rytmu: autokorelacja obwiedni surge. Zwraca okres cyklu odepchniecia
+// jednej nogi w sekundach (0 gdy brak wyraznego rytmu). Lekka wersja O(BUF*LAG),
+// liczona raz na sekunde na rdzeniu writera — nie obciaza petli 200 Hz.
+// ---------------------------------------------------------------------------
+float cadencePeriodFromEnvelope() {
+  if (cadenceEnvFilled < CADENCE_BUF) return 0.0f;
+  // rozwin bufor kolowy do kolejnosci chronologicznej + srednia
+  float seq[CADENCE_BUF];
+  float mean = 0.0f;
+  for (uint8_t k = 0; k < CADENCE_BUF; ++k) {
+    seq[k] = cadenceEnv[(uint8_t)(cadenceEnvIdx + k) % CADENCE_BUF];
+    mean += seq[k];
+  }
+  mean /= CADENCE_BUF;
+  for (uint8_t k = 0; k < CADENCE_BUF; ++k) seq[k] -= mean;
+  // autokorelacja: znajdz lag o najwyzszej korelacji
+  float ac[CADENCE_LAG_MAX + 1];
+  float best = -1e30f; uint8_t bestLag = 0;
+  float ac0 = 0.0f; for (uint8_t k = 0; k < CADENCE_BUF; ++k) ac0 += seq[k]*seq[k];
+  if (ac0 <= 1e-6f) return 0.0f; // cisza / brak sygnalu
+  for (uint8_t lag = CADENCE_LAG_MIN; lag <= CADENCE_LAG_MAX; ++lag) {
+    float s = 0.0f;
+    for (uint8_t k = 0; k + lag < CADENCE_BUF; ++k) s += seq[k]*seq[k+lag];
+    ac[lag] = s;
+    if (s > best) { best = s; bestLag = lag; }
+  }
+  if (best <= 0.15f * ac0) return 0.0f; // rytm zbyt slaby/niepewny
+  // korekta sub-harmoniczna: gdy 2*lag tez silnie koreluje, prawdziwy okres = 2*lag
+  // (dwie fazy cyklu odepchniecia dawaly polowe okresu).
+  uint16_t dbl = (uint16_t)bestLag * 2;
+  if (dbl <= CADENCE_LAG_MAX && ac[dbl] > CADENCE_SUBHARM_RATIO * best) bestLag = (uint8_t)dbl;
+  return (float)bestLag / (float)CADENCE_ENV_HZ; // okres w sekundach
+}
+
+// ---------------------------------------------------------------------------
 // Zadanie IMU: wysokopriorytetowe, bez LittleFS, LCD i Serial.
 // ---------------------------------------------------------------------------
 void imuTask(void*) {
@@ -1935,6 +1990,17 @@ void imuTask(void*) {
   uint8_t cadenceHead = 0;
   uint8_t cadenceCount = 0;
   uint32_t cadenceSumMs = 0;
+
+  // Kadencja z rytmu (autokorelacja): probkowanie obwiedni surge + timing.
+  float cadenceEnvPeak = 0.0f;       // max surge od ostatniej probki obwiedni
+  uint32_t lastEnvSampleUs = 0;
+  uint32_t lastCadenceCalcUs = 0;
+  float strideCadenceSmoothed = 0.0f; // kadencja KROKU (/min) — mediana z okien
+  float cadenceWindow[CADENCE_MEDIAN_WINDOW] = {0}; // ostatnie pomiary kroku
+  uint8_t cadenceWindowCount = 0;
+  // wyzeruj bufor obwiedni na starcie sesji
+  cadenceEnvIdx = 0; cadenceEnvFilled = 0;
+  for (uint8_t k = 0; k < CADENCE_BUF; ++k) cadenceEnv[k] = 0.0f;
 
   uint32_t lastValidImuUs = 0;
   uint32_t lastStackSampleUs = 0;
@@ -1977,6 +2043,19 @@ void imuTask(void*) {
       const float surgeRaw = (afLpNow - previousAfLp) / dt;
       previousAfLp = afLpNow;
       const float surge = surgeFilter.update(surgeRaw, dt, SURGE_LP_CUTOFF_HZ);
+
+      // --- Kadencja z rytmu: obwiednia surge (max) probkowana co 50 ms do bufora ---
+      const float surgeAbs = fabsf(surge);
+      if (surgeAbs > cadenceEnvPeak) cadenceEnvPeak = surgeAbs;
+      if (!lastEnvSampleUs) lastEnvSampleUs = nowUs;
+      if ((uint32_t)(nowUs - lastEnvSampleUs) >= CADENCE_ENV_PERIOD_US) {
+        cadenceEnv[cadenceEnvIdx] = cadenceEnvPeak;
+        cadenceEnvIdx = (uint8_t)((cadenceEnvIdx + 1) % CADENCE_BUF);
+        if (cadenceEnvFilled < CADENCE_BUF) cadenceEnvFilled++;
+        cadenceEnvPeak = 0.0f;
+        lastEnvSampleUs = nowUs;
+      }
+
       const float intensity = 100.0f * fminf(1.0f,
           INTENSITY_ACC_WEIGHT * fmaxf(0.0f, hpAf) / INTENSITY_ACC_REF_G +
           INTENSITY_SURGE_WEIGHT * fmaxf(0.0f, surge) / INTENSITY_SURGE_REF_GPS);
@@ -2115,6 +2194,33 @@ void imuTask(void*) {
       const uint32_t imuStackFreeBytes = stackSampleDue
           ? (uint32_t)uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t) : 0;
       if (stackSampleDue) lastStackSampleUs = nowUs;
+
+      // Kadencja z rytmu: raz na sekunde policz okres (poza sekcja krytyczna — funkcja ciezsza).
+      bool cadenceDue = !lastCadenceCalcUs || (uint32_t)(nowUs - lastCadenceCalcUs) >= CADENCE_CALC_PERIOD_US;
+      float strideCadNow = strideCadenceSmoothed;
+      if (cadenceDue) {
+        lastCadenceCalcUs = nowUs;
+        const float period = cadencePeriodFromEnvelope(); // okres cyklu nogi [s], 0 = brak rytmu
+        if (period > 0.0f) {
+          const float strideCad = (60.0f / period) * 2.0f; // KROK = obie nogi
+          // przesun okno i policz mediane (odporna na sub/nad-harmoniczne wahniecia)
+          for (uint8_t k = CADENCE_MEDIAN_WINDOW - 1; k > 0; --k) cadenceWindow[k] = cadenceWindow[k-1];
+          cadenceWindow[0] = strideCad;
+          if (cadenceWindowCount < CADENCE_MEDIAN_WINDOW) cadenceWindowCount++;
+          float tmp[CADENCE_MEDIAN_WINDOW];
+          for (uint8_t k = 0; k < cadenceWindowCount; ++k) tmp[k] = cadenceWindow[k];
+          for (uint8_t a = 0; a < cadenceWindowCount; ++a)   // sortowanie babelkowe (max 5 el.)
+            for (uint8_t bb = a + 1; bb < cadenceWindowCount; ++bb)
+              if (tmp[bb] < tmp[a]) { float t = tmp[a]; tmp[a] = tmp[bb]; tmp[bb] = t; }
+          strideCadenceSmoothed = tmp[cadenceWindowCount / 2];
+        } else {
+          // brak wyraznego rytmu (postoj/bezruch) — wyczysc okno
+          cadenceWindowCount = 0;
+          strideCadenceSmoothed = 0.0f;
+        }
+        strideCadNow = strideCadenceSmoothed;
+      }
+
       portENTER_CRITICAL(&statsMux);
       stats.samplesAcquired++;
       if (!stats.firstSampleUs) stats.firstSampleUs = record.tUs;
@@ -2162,7 +2268,12 @@ void imuTask(void*) {
       // Kadencja i moc proxy.
       stats.cadenceMsNow = cadenceCount ? (uint16_t)(cadenceSumMs / cadenceCount) : 0;
       stats.cadencePerMin = stats.cadenceMsNow ? 60000.0f / stats.cadenceMsNow : 0.0f;
-      stats.powerProxyNow = stats.cadencePerMin * stats.strokeStrengthNow / 100.0f;
+      // Kadencja z rytmu (dokladniejsza): KROK = obie nogi, oraz kadencja tej nogi.
+      stats.strideCadencePerMin = strideCadNow;
+      stats.legCadencePerMin = strideCadNow * 0.5f;
+      // Moc proxy: uzyj kadencji krokowej z rytmu gdy dostepna, inaczej dawnej.
+      const float cadForPower = strideCadNow > 0.0f ? strideCadNow : stats.cadencePerMin;
+      stats.powerProxyNow = cadForPower * stats.strokeStrengthNow / 100.0f;
       stats.powerProxyMax = fmaxf(stats.powerProxyMax, stats.powerProxyNow);
       portEXIT_CRITICAL(&statsMux);
       appendLiveHistory(record.tUs, intensityLive, strengthInstant, (float)stats.cadenceMsNow,
@@ -2562,7 +2673,7 @@ canvas{display:block;width:100%;height:180px;border-radius:11px;background:#0b0e
   </div>
 
   <div class="duo">
-    <article class="metric primary"><span class="label">KADENCJA</span><span class="value"><span id="cadence">--</span><span class="unit">/min</span></span><div class="metricSub"><span id="cadenceMs">--</span> ms / odepchniecie</div></article>
+    <article class="metric primary"><span class="label">KADENCJA KROK</span><span class="value"><span id="cadence">--</span><span class="unit">/min</span></span><div class="metricSub">noga <span id="legCadence">--</span>/min · <span id="cadenceMs">--</span> ms</div></article>
     <article class="metric primary"><span class="label">MOC (proxy)</span><span class="value"><span id="power">--</span><span class="unit">pkt</span></span><div class="metricSub">sila x kadencja</div></article>
   </div>
 
@@ -2642,7 +2753,7 @@ const zoneSoft=['rgba(195,208,222,.16)','rgba(94,199,232,.16)','rgba(255,209,102
 function updateZones(z,str){let values=z||[];by('zoneMap').querySelectorAll('.zoneSeg b').forEach((el,i)=>el.textContent=num(values[i],0)+'%');let v=Math.min(100,Math.max(0,Number(str||0)));let cur=by('zoneCursor');cur.style.left=v+'%';let c=zoneOf(str);by('zoneDotNow').style.background=zoneColors[c];by('zoneNow').textContent=num(str||0,0)+' / 100';let g=by('strengthGauge');if(g)g.style.width=v+'%';let root=document.documentElement;root.style.setProperty('--accent',zoneColors[c]);root.style.setProperty('--accentSoft',zoneSoft[c])}function updateQuality(s){let grade='ok',label='LOG OK',warns=[];if((s.qdrop||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('qdrop '+s.qdrop)}if((s.gap8||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('gap8 '+s.gap8)}if((s.bad||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('bad '+s.bad)}if((s.sat||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('sat '+s.sat)}if(!warns.length&&(s.queue||0)>448){grade='warn';label='KOLJKA PELNA';warns.push('kolejka '+s.queue+'/512')}let badge=by('logBadge');badge.className='logBadge '+grade;badge.textContent=label;by('logWarns').innerHTML=warns.map(x=>{let c=(x.indexOf('qdrop')===0||x.indexOf('bad')===0)?'bad':'warn';return '<span class="'+c+'">'+x+'</span>'}).join('')}
 function zoneFromStrength(v){let n=Number(v||0);return n<15?0:n<30?1:n<50?2:n<70?3:4}
 function drawLiveStrip(){let el=by('liveStrip');if(!el){return}let html='';let pts=historyPoints.slice(-120);pts.forEach(p=>{let z=zoneFromStrength(p[2]);let c=zoneColors[z];let mark=p[6]&&p[6]>0?';outline:1px solid #fff':'';html+='<span style="background:'+c+';flex:1;min-width:3px;height:26px;border-radius:2px;'+mark+';display:inline-block" title="'+p[0]+'s · sily '+p[2]+'"></span>'});el.innerHTML=html||'<div class="hint">Brak danych 1 s...</div>'}
-async function getStatus(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw new Error();let s=await r.json();phoneStatus=s;mark(s);set('time',fmt(s.time_s));set('strokeStrength',num(s.stroke_strength,0));set('strokeZone',s.stroke_zone_name||'--');set('cadence',num(s.cadence_per_min,1));set('cadenceMs',num(s.cadence_ms,0));set('power',num(s.power_proxy,1));set('intensity',num(s.intensity,0));set('intensityPct','P90 '+num(s.intensity_p90,0));set('strokesPerMin',num(s.strokes_per_min,1));set('strokes',s.strokes||0);set('strokesStrongPct',num(s.strokes_strong_pct,0)+'%');set('phase',num(s.strength_phase_ms,0));set('surge',num(s.surge_gps,1));set('active',num(s.active_pct,0)+'%');set('static',num(s.idle_pct,0)+'%');set('side',s.side||'R');set('strPct',num(s.stroke_p90,0)+' / '+num(s.stroke_p95,0));set('intPct',num(s.intensity_p90,0)+' / '+num(s.intensity_p95,0));updateZones(s.zones,s.stroke_strength);set('rate',num(s.rate_hz,0)+' Hz');set('queue',s.queue+' / 512');set('qdrop',s.qdrop);set('strokeZoneCard',s.stroke_zone_name||'--');set('lean',num(s.lean_deg,1));updateQuality(s);set('file',s.file||'-');set('sessionMode',(s.session_mode||'NORMAL')+' · '+(s.session_format||'RIMU04'));set('files',s.files);set('free',s.free_kb);set('clients',s.clients);by('startDefault').disabled=!s.can_start;by('startMax').disabled=!s.can_start;by('startRawDefault').disabled=!s.can_start;by('startRawMax').disabled=!s.can_start;by('stop').disabled=!s.recording;by('cancel').disabled=!s.countdown;updateWebAvailability(s);set('note','Odświeżono · '+new Date().toLocaleTimeString())}catch(e){let n=by('note');n.textContent='Brak polaczenia z urzadzeniem';n.className='note err'}}
+async function getStatus(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw new Error();let s=await r.json();phoneStatus=s;mark(s);set('time',fmt(s.time_s));set('strokeStrength',num(s.stroke_strength,0));set('strokeZone',s.stroke_zone_name||'--');set('cadence',num(s.stride_cadence!=null?s.stride_cadence:s.cadence_per_min,0));set('legCadence',num(s.leg_cadence,0));set('cadenceMs',num(s.cadence_ms,0));set('power',num(s.power_proxy,1));set('intensity',num(s.intensity,0));set('intensityPct','P90 '+num(s.intensity_p90,0));set('strokesPerMin',num(s.strokes_per_min,1));set('strokes',s.strokes||0);set('strokesStrongPct',num(s.strokes_strong_pct,0)+'%');set('phase',num(s.strength_phase_ms,0));set('surge',num(s.surge_gps,1));set('active',num(s.active_pct,0)+'%');set('static',num(s.idle_pct,0)+'%');set('side',s.side||'R');set('strPct',num(s.stroke_p90,0)+' / '+num(s.stroke_p95,0));set('intPct',num(s.intensity_p90,0)+' / '+num(s.intensity_p95,0));updateZones(s.zones,s.stroke_strength);set('rate',num(s.rate_hz,0)+' Hz');set('queue',s.queue+' / 512');set('qdrop',s.qdrop);set('strokeZoneCard',s.stroke_zone_name||'--');set('lean',num(s.lean_deg,1));updateQuality(s);set('file',s.file||'-');set('sessionMode',(s.session_mode||'NORMAL')+' · '+(s.session_format||'RIMU04'));set('files',s.files);set('free',s.free_kb);set('clients',s.clients);by('startDefault').disabled=!s.can_start;by('startMax').disabled=!s.can_start;by('startRawDefault').disabled=!s.can_start;by('startRawMax').disabled=!s.can_start;by('stop').disabled=!s.recording;by('cancel').disabled=!s.countdown;updateWebAvailability(s);set('note','Odświeżono · '+new Date().toLocaleTimeString())}catch(e){let n=by('note');n.textContent='Brak polaczenia z urzadzeniem';n.className='note err'}}
 async function act(cmd){if(cmd==='stop'&&!confirm('Zatrzymac bieżąca sesje?'))return;try{let r=await fetch('/api/action?cmd='+cmd,{method:'POST',cache:'no-store'}),j=await r.json();set('note',j.message||'Polecenie wyslane');by('note').className=r.ok&&j.ok?'note good':'note err';setTimeout(getStatus,250)}catch(e){set('note','Nie mozna wyslac polecenia');by('note').className='note err'}}
 function showView(view){activeView=view;['live','rhythm','zones','files','mount','diag'].forEach(name=>{by(name+'Panel').classList.toggle('active',name===view);by(name+'Tab').classList.toggle('active',name===view)});if(view==='files')loadFiles();if(view==='mount')loadMount();if(view==='diag')loadDiagnostics();if(view==='rhythm')setTimeout(drawActiveCharts,25);if(view==='zones')setTimeout(drawZoneCharts,25)}
 function showCharts(which){activeChart=which;['intensity','phase','motion'].forEach(name=>{by(name+'Panel').classList.toggle('active',name===which);by(name==='intensity'?'dynTab':name==='phase'?'phaseTab':'paramsTab').classList.toggle('active',name===which)});setTimeout(drawActiveCharts,25)}
@@ -2666,7 +2777,7 @@ async function postAction(cmd,extra){let q=new URLSearchParams(Object.assign({cm
 async function loadFiles(){if(filesBusy)return;let list=by('fileList');if(!phoneStatus.can_files){list.textContent='Lista plikow jest zablokowana podczas nagrywania.';return}filesBusy=true;try{let r=await fetch('/api/files',{cache:'no-store'});if(!r.ok)throw new Error();let d=await r.json(),files=d.files||[];if(!files.length){list.textContent='Brak zapisanych sesji.';return}list.innerHTML=files.map(f=>{let n=esc(f.name);return '<div class="fileRow"><div><div class="fileName">'+n+(f.packed?' <i class="packedTag">PAK</i>':'')+'</div><div class="fileMeta">'+sizeText(f.bytes)+'</div></div><div class="fileActions">'+(f.packed?'':'<button class="mini" data-pack="'+n+'">PAKUJ</button>')+'<button class="mini" data-download="'+n+'">POBIERZ</button><button class="mini danger" data-delete="'+n+'">USUN</button></div></div>'}).join('')+(d.truncated?'<div class="hint">Pokazano pierwsze '+files.length+' z '+d.total+' plikow.</div>':'');list.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>downloadFile(b.dataset.download));list.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteFile(b.dataset.delete));list.querySelectorAll('[data-pack]').forEach(b=>b.onclick=()=>packFile(b.dataset.pack))}catch(e){list.textContent='Nie mozna pobrac listy plikow.'}finally{filesBusy=false}}
 function downloadFile(name){if(phoneStatus.can_files)window.location='/api/download?file='+encodeURIComponent(name)}async function deleteFile(name){if(!phoneStatus.can_manage_files||!confirm('Usunac bezpowrotnie '+name+'?'))return;try{await postAction('delete_one',{file:name});setTimeout(()=>{getStatus();loadFiles()},350)}catch(e){}}async function deleteAllFiles(){if(!phoneStatus.can_manage_files||!confirm('USUNAC WSZYSTKIE sesje? Operacji nie mozna cofnac.'))return;let code=prompt('Wpisz ERASE aby potwierdzic:');if(code!=='ERASE')return;try{await postAction('delete_all',{confirm:'ERASE'});setTimeout(()=>{getStatus();loadFiles()},500)}catch(e){}}function packFile(name){if(!confirm('Spakowac (LZSS) plik '+name+'?'))return;postAction('pack_one',{file:name}).then(()=>{getStatus();loadFiles()}).catch(()=>{})}async function packAll(){if(!confirm('Spakowac wszystkie sesje (LZSS)? Oryginaly zostana usuniete po sukcesie.'))return;try{await postAction('pack_all',{});setTimeout(()=>{getStatus();loadFiles()},600)}catch(e){}}
 async function loadMount(){try{let r=await fetch('/api/mount',{cache:'no-store'}),d=await r.json();if(!d.available){set('mountValues','ODCZYT NIEDOSTEPNY');set('mountHint','Montaz sprawdzaj poza nagrywaniem.');return}set('mountValues','F'+d.forward_g.toFixed(1)+' L'+d.lateral_g.toFixed(1)+' U'+d.vertical_g.toFixed(1));set('mountHint',d.vertical_g>0.70?'Prawidlowo: gora czujnika wskazuje niebo.':'Ustaw rolke nieruchomo: oczekiwane U blisko +1.0 g.')}catch(e){set('mountHint','Brak odczytu montazu.')}}
-function diagCell(label,value){return '<div>'+label+'<b>'+value+'</b></div>'}function batteryLevelText(d){return d.battery_valid?d.battery_pct+'% / '+(d.battery_mv>0?(d.battery_mv/1000).toFixed(2)+' V':'--'):'BRAK ODCZYTU'}function batteryTimeText(d){if(!d.battery_valid)return 'BRAK DANYCH';if(d.battery_charging)return 'LADOWANIE';return d.battery_estimate_valid?fmt(d.battery_remaining_min*60):'UCZY SIE'}function stackText(v){let n=Number(v||0);return n>0?Math.round(n)+' B':'N/A'}function calibrationDiagText(d){return d.calibration_active?'TRWA':d.calibration_complete?'GOTOWA':d.calibration_last_moved?'RUCH':'OCZEKUJE'}async function loadDiagnostics(){try{let r=await fetch('/api/diagnostics',{cache:'no-store'}),d=await r.json(),lag=Math.max(0,(d.queued||0)-(d.written||0));by('diagGrid').innerHTML=diagCell('FLASH',d.storage_ready?'OK':'BRAK')+diagCell('WOLNE',d.free_kb+' KB')+diagCell('PLIKI',d.files)+diagCell('WIFI',d.ap_ip+' / C'+d.clients)+diagCell('AKUMULATOR',batteryLevelText(d))+diagCell('PRACA EST.',batteryTimeText(d))+diagCell('SPADEK BATERII',d.battery_estimate_valid?num(d.battery_drain_pct_h,1)+'% / h':'--')+diagCell('POMIAR BATERII',d.battery_age_s+' s temu')+diagCell('SAMPLES',d.samples)+diagCell('ZAPISANE',d.written)+diagCell('LAG WRITER',lag)+diagCell('Q MAX',d.queue_max)+'<div>QDROP<b>'+d.qdrop+'</b></div>'+diagCell('WRITE',d.writer_errors)+diagCell('GAP8 / BAD',d.gap8+' / '+d.bad)+diagCell('SAT',d.saturation)+diagCell('INT SRED / MAX',num(d.intensity_avg)+' / '+num(d.intensity_max))+diagCell('INT P90/P95',num(d.intensity_p90)+' / '+num(d.intensity_p95))+diagCell('SILA SR / MAX',num(d.stroke_avg)+' / '+num(d.stroke_max))+diagCell('SILA P90/P95',num(d.stroke_p90)+' / '+num(d.stroke_p95))+diagCell('ODPCHNIEC',d.stroke_count)+diagCell('Z TEGO SILNE %',num(d.stroke_strong_pct,0)+'%')+diagCell('FAZA SR. / MAX',num(d.stroke_phase_avg_ms,0)+' / '+num(d.stroke_phase_max_ms,0)+' ms')+diagCell('KADENCJA',num(d.cadence_per_min,1)+' / min')+diagCell('MOC PROXY',num(d.power_proxy,1)+' szcz. '+num(d.power_proxy_max,1))+diagCell('UDERZEN.',num(d.surge_gps,0)+' g/s')+diagCell('RUCH / GLOAD',num(d.spin_dps,0)+' dps / '+num(d.gload_g,2)+' g')+diagCell('AKTYWNE / BEZRUCH',num(d.active_pct,0)+' / '+num(d.idle_pct,0)+'%')+diagCell('STREFY SILY',(d.zones||[]).map(v=>num(v,0)+'%').join(' / '))+diagCell('TRYB / FORMAT',(d.session_mode||'NORMAL')+' / '+(d.session_format||'RIMU04'))+diagCell('KAL SESJA',calibrationDiagText(d))+diagCell('CAL OK / RUCH',(d.calibration_stable||0)+' / '+(d.calibration_rejected||0))+diagCell('CAL PONOWIENIA',d.calibration_retries||0)+diagCell('IMU STALL',d.imu_stalls||0)+diagCell('STOS IMU MIN',stackText(d.imu_stack_min_free))+diagCell('STOS WRITER MIN',stackText(d.writer_stack_min_free))+diagCell('ODBCIENIA',d.stroke_count)+diagCell('LOG',num(d.rate_hz,0)+' Hz')+diagCell('IMU',d.imu_done?'GOTOWE':'AKTYWNE')+diagCell('WRITER',d.writer_done?'GOTOWY':'AKTYWNY')}catch(e){by('diagGrid').textContent='Nie mozna pobrac diagnostyki.'}}
+function diagCell(label,value){return '<div>'+label+'<b>'+value+'</b></div>'}function batteryLevelText(d){return d.battery_valid?d.battery_pct+'% / '+(d.battery_mv>0?(d.battery_mv/1000).toFixed(2)+' V':'--'):'BRAK ODCZYTU'}function batteryTimeText(d){if(!d.battery_valid)return 'BRAK DANYCH';if(d.battery_charging)return 'LADOWANIE';return d.battery_estimate_valid?fmt(d.battery_remaining_min*60):'UCZY SIE'}function stackText(v){let n=Number(v||0);return n>0?Math.round(n)+' B':'N/A'}function calibrationDiagText(d){return d.calibration_active?'TRWA':d.calibration_complete?'GOTOWA':d.calibration_last_moved?'RUCH':'OCZEKUJE'}async function loadDiagnostics(){try{let r=await fetch('/api/diagnostics',{cache:'no-store'}),d=await r.json(),lag=Math.max(0,(d.queued||0)-(d.written||0));by('diagGrid').innerHTML=diagCell('FLASH',d.storage_ready?'OK':'BRAK')+diagCell('WOLNE',d.free_kb+' KB')+diagCell('PLIKI',d.files)+diagCell('WIFI',d.ap_ip+' / C'+d.clients)+diagCell('AKUMULATOR',batteryLevelText(d))+diagCell('PRACA EST.',batteryTimeText(d))+diagCell('SPADEK BATERII',d.battery_estimate_valid?num(d.battery_drain_pct_h,1)+'% / h':'--')+diagCell('POMIAR BATERII',d.battery_age_s+' s temu')+diagCell('SAMPLES',d.samples)+diagCell('ZAPISANE',d.written)+diagCell('LAG WRITER',lag)+diagCell('Q MAX',d.queue_max)+'<div>QDROP<b>'+d.qdrop+'</b></div>'+diagCell('WRITE',d.writer_errors)+diagCell('GAP8 / BAD',d.gap8+' / '+d.bad)+diagCell('SAT',d.saturation)+diagCell('INT SRED / MAX',num(d.intensity_avg)+' / '+num(d.intensity_max))+diagCell('INT P90/P95',num(d.intensity_p90)+' / '+num(d.intensity_p95))+diagCell('SILA SR / MAX',num(d.stroke_avg)+' / '+num(d.stroke_max))+diagCell('SILA P90/P95',num(d.stroke_p90)+' / '+num(d.stroke_p95))+diagCell('ODPCHNIEC',d.stroke_count)+diagCell('Z TEGO SILNE %',num(d.stroke_strong_pct,0)+'%')+diagCell('FAZA SR. / MAX',num(d.stroke_phase_avg_ms,0)+' / '+num(d.stroke_phase_max_ms,0)+' ms')+diagCell('KADENCJA KROK',num(d.stride_cadence,0)+' /min (noga '+num(d.leg_cadence,0)+')')+diagCell('MOC PROXY',num(d.power_proxy,1)+' szcz. '+num(d.power_proxy_max,1))+diagCell('UDERZEN.',num(d.surge_gps,0)+' g/s')+diagCell('RUCH / GLOAD',num(d.spin_dps,0)+' dps / '+num(d.gload_g,2)+' g')+diagCell('AKTYWNE / BEZRUCH',num(d.active_pct,0)+' / '+num(d.idle_pct,0)+'%')+diagCell('STREFY SILY',(d.zones||[]).map(v=>num(v,0)+'%').join(' / '))+diagCell('TRYB / FORMAT',(d.session_mode||'NORMAL')+' / '+(d.session_format||'RIMU04'))+diagCell('KAL SESJA',calibrationDiagText(d))+diagCell('CAL OK / RUCH',(d.calibration_stable||0)+' / '+(d.calibration_rejected||0))+diagCell('CAL PONOWIENIA',d.calibration_retries||0)+diagCell('IMU STALL',d.imu_stalls||0)+diagCell('STOS IMU MIN',stackText(d.imu_stack_min_free))+diagCell('STOS WRITER MIN',stackText(d.writer_stack_min_free))+diagCell('ODBCIENIA',d.stroke_count)+diagCell('LOG',num(d.rate_hz,0)+' Hz')+diagCell('IMU',d.imu_done?'GOTOWE':'AKTYWNE')+diagCell('WRITER',d.writer_done?'GOTOWY':'AKTYWNY')}catch(e){by('diagGrid').textContent='Nie mozna pobrac diagnostyki.'}}
 getStatus();getHistory();setInterval(getStatus,1000);setInterval(getHistory,1000);setInterval(()=>{if(activeView==='files')loadFiles();else if(activeView==='mount')loadMount();else if(activeView==='diag')loadDiagnostics()},3000);window.addEventListener('resize',()=>{if(activeView==='rhythm')drawActiveCharts();if(activeView==='zones')drawZoneCharts()});
 </script>
 </body>
@@ -2765,7 +2876,7 @@ void sendPhoneStatus() {
       "\"time_s\":%lu,"
       "\"stroke_strength\":%.2f,\"stroke_avg\":%.2f,\"stroke_p90\":%u,\"stroke_p95\":%u,"
       "\"stroke_zone\":%u,\"stroke_zone_name\":\"%s\",\"strokes_per_min\":%.2f,\"strokes\":%lu,\"strokes_strong_pct\":%.1f,"
-      "\"cadence_per_min\":%.1f,\"cadence_ms\":%u,\"power_proxy\":%.2f,\"power_proxy_max\":%.2f,"
+      "\"cadence_per_min\":%.1f,\"cadence_ms\":%u,\"stride_cadence\":%.1f,\"leg_cadence\":%.1f,\"power_proxy\":%.2f,\"power_proxy_max\":%.2f,"
       "\"strength_phase_ms\":%.1f,\"strength_phase_avg_ms\":%.1f,\"strength_phase_max_ms\":%lu,"
       "\"intensity\":%.2f,\"intensity_avg\":%.2f,\"intensity_max\":%.2f,\"intensity_p90\":%u,\"intensity_p95\":%u,"
       "\"surge_gps\":%.1f,\"surge_max\":%.1f,\"spin_dps\":%.2f,\"gload_g\":%.3f,\"lean_deg\":%.2f,"
@@ -2782,7 +2893,7 @@ void sendPhoneStatus() {
       countdownCalibration.lastAttemptMoved ? "true" : "false", (unsigned long)elapsed,
       s.strokeStrengthNow, strokeAvg, strP90, strP95,
       zone, strokeStrengthZoneName(zone), strokesPerMin, (unsigned long)s.strokeCount, strokeStrongPct,
-      s.cadencePerMin, s.cadenceMsNow, s.powerProxyNow, s.powerProxyMax,
+      s.cadencePerMin, s.cadenceMsNow, s.strideCadencePerMin, s.legCadencePerMin, s.powerProxyNow, s.powerProxyMax,
       s.strokePhaseSumMs && s.strokeCount ? (float)s.strokePhaseSumMs / s.strokeCount : 0.0f, strokePhaseAvg,
       (unsigned long)s.strokePhaseMaxMs,
       s.intensityNow, s.intensityAverage, s.intensityMax, intP90, intP95,
@@ -2906,7 +3017,7 @@ void sendPhoneDiagnostics() {
       "\"intensity\":%.2f,\"surge_gps\":%.1f,\"surge_max\":%.1f,\"spin_dps\":%.2f,\"gload_g\":%.3f,"
       "\"stroke_count\":%lu,\"stroke_strong_pct\":%.1f,\"stroke_avg\":%.2f,\"stroke_p90\":%u,\"stroke_p95\":%u,"
       "\"stroke_max\":%lu,\"stroke_phase_avg_ms\":%.1f,\"stroke_phase_max_ms\":%lu,"
-      "\"cadence_ms\":%u,\"cadence_per_min\":%.1f,\"power_proxy\":%.2f,\"power_proxy_max\":%.2f,"
+      "\"cadence_ms\":%u,\"cadence_per_min\":%.1f,\"stride_cadence\":%.1f,\"leg_cadence\":%.1f,\"power_proxy\":%.2f,\"power_proxy_max\":%.2f,"
       "\"active_pct\":%.2f,\"idle_pct\":%.2f,\"samples\":%lu,\"queued\":%lu,\"written\":%lu,"
       "\"zones\":[%.1f,%.1f,%.1f,%.1f,%.1f],\"rate_hz\":%.2f,\"session_mode\":\"%s\",\"session_format\":\"%s\","
       "\"record_bytes\":%u,\"imu_done\":%s,\"writer_done\":%s}",
@@ -2925,7 +3036,7 @@ void sendPhoneDiagnostics() {
       s.intensityNow, s.surgeNow, s.surgeMax, s.spinNow, s.gloadNow,
       (unsigned long)s.strokeCount, s.strokeCount ? 100.0f * s.strokeStrongCount / s.strokeCount : 0.0f,
       strokeAvg, strP90, strP95, (unsigned long)s.strokeMax100, strokePhaseAvg,
-      (unsigned long)s.strokePhaseMaxMs, s.cadenceMsNow, s.cadencePerMin, s.powerProxyNow, s.powerProxyMax,
+      (unsigned long)s.strokePhaseMaxMs, s.cadenceMsNow, s.cadencePerMin, s.strideCadencePerMin, s.legCadencePerMin, s.powerProxyNow, s.powerProxyMax,
       activePct, idlePct,
       (unsigned long)s.samplesAcquired, (unsigned long)s.recordsQueued, (unsigned long)s.recordsWritten,
       100.0f * s.zone0Count / sampleTotal, 100.0f * s.zone1Count / sampleTotal,
