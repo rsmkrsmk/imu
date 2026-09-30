@@ -133,11 +133,13 @@ const float LIVE_INTENSITY_CUTOFF_HZ = 1.5f; // wygładzanie intensywności wyś
 // Wejście do kandydata: uderzeniowość (surge) lub przyspieszenie hp w przód.
 // Progi dobrane na danych (ses00038/40, HP=1.0 Hz) tak, aby kadencja per-lyzwa
 // wynosila ~70/min zamiast ~130 (eliminacja podwojnego liczenia impulsow).
-const float STROKE_ENTER_SURGE_GPS = 20.0f;   // prog uderzeniowosci na wejsciu (g/s)
-const float STROKE_ENTER_HP_G = 0.80f;        // prog przysp. hp na wejsciu (g)
+// Progi obnizone do realnej jazdy (ses56/57/58): odepchniecie ma hpAf~0.5-2g,
+// surge~15-60g/s. Poprzednie (20/0.80/40/1.30) byly ustawione na machanie reka.
+const float STROKE_ENTER_SURGE_GPS = 12.0f;   // prog uderzeniowosci na wejsciu (g/s)
+const float STROKE_ENTER_HP_G = 0.45f;        // prog przysp. hp na wejsciu (g)
 // Potwierdzenie w oknie ~60-100 ms: minimum uderzeniowosc albo szczyt hp.
-const float STROKE_CONFIRM_SURGE_GPS = 40.0f;
-const float STROKE_CONFIRM_HP_G = 1.30f;
+const float STROKE_CONFIRM_SURGE_GPS = 20.0f;
+const float STROKE_CONFIRM_HP_G = 0.70f;
 const uint32_t STROKE_REFRACTORY_US = 450000; // min. odstep miedzy odepchnieciami (rytm)
 const uint32_t STROKE_WINDOW_US = 120000;     // max. czas okna kandydata (potwierdzenie do ~120 ms)
 const uint8_t STROKE_CADENCE_WINDOW = 12;     // liczba odepchnięć do średniej ruchomej kadencji
@@ -159,18 +161,22 @@ const uint8_t CADENCE_MEDIAN_WINDOW = 5;      // mediana z N ostatnich okien (st
 const float STROKE_W_PEAK = 0.40f;            // waga szczytu przyspieszenia w przód
 const float STROKE_W_IMPULSE = 0.30f;         // waga całki impulsu (pomiar "pędu")
 const float STROKE_W_SURGE = 0.30f;           // waga maksymalnej uderzeniowości
-// Referencje normalizacji dobrane na danych (HP=1.0 Hz): typowe odepchniecie ~45-60,
-// mocne ~85-100. Poprzednie wartosci (0.55/0.05/45) zanizaly i zapychaly skale.
-const float STROKE_REF_PEAK_G = 5.0f;         // referencja szczytu przysp. hp (g)
-const float STROKE_REF_IMPULSE_GS = 0.30f;    // referencja calki impulsu (g*s)
-const float STROKE_REF_SURGE_GPS = 130.0f;    // referencja uderzeniowosci (g/s)
+// Referencje SILY dobrane na realnych jazdach (ses56/57/58, HP=1.0 Hz):
+// mocna jazda 80% -> strefa 3 (MOCNE), sprint -> strefa 4. Poprzednie (5.0/0.30/130)
+// byly ~2-3x za wysokie -> wszystko ladowalo w strefie 0-1.
+const float STROKE_REF_PEAK_G = 2.0f;         // referencja szczytu przysp. hp (g)
+const float STROKE_REF_IMPULSE_GS = 0.15f;    // referencja calki impulsu (g*s)
+const float STROKE_REF_SURGE_GPS = 55.0f;     // referencja uderzeniowosci (g/s)
 
-// INTENSITY v4: względny wskaźnik wysiłku (0-100), z niższym klipingiem niż v3 —
-// rzadkie szczyty nie "zapychają" skali (referencje niższe niż w v3).
-const float INTENSITY_ACC_REF_G = 0.90f;      // referencja przyspieszenia (g)
-const float INTENSITY_SURGE_REF_GPS = 90.0f;  // referencja uderzeniowości (g/s)
-const float INTENSITY_ACC_WEIGHT = 0.55f;     // waga przysp. w intensywności
-const float INTENSITY_SURGE_WEIGHT = 0.45f;   // waga uderzeniowości w intensywności
+// WYSILEK CALOSCIOWY (TSS/Wysilek) — wolno zmienna miara wysilku (nie sila pojedynczego
+// odbicia). Referencje wyzsze niz dawne INTENSITY, by mocna jazda nie zapychala skali.
+const float INTENSITY_ACC_REF_G = 1.5f;       // referencja przyspieszenia (g)
+const float INTENSITY_SURGE_REF_GPS = 70.0f;  // referencja uderzeniowości (g/s)
+const float INTENSITY_ACC_WEIGHT = 0.55f;     // waga przysp. w wysilku
+const float INTENSITY_SURGE_WEIGHT = 0.45f;   // waga uderzeniowości w wysilku
+const float EFFORT_SCALE = 3.0f;              // rozciagniecie surowego wysilku do 0..100
+const float EFFORT_LP_HZ = 0.3f;              // wolne wygladzanie ("jak ciezko dysze")
+const float TSS_SCALE = 100.0f;               // skala TSS: (wysilek/100)^2 * minuty * skala
 
 // Strefy intensywności liczone wg SIŁY ODPCHNIĘCIA (strefy B):
 // Z0: 0-15, Z1: 15-30, Z2: 30-50, Z3: 50-70, Z4: 70-100.
@@ -426,9 +432,10 @@ struct RuntimeStats {
   float powerProxyMax;
 
   // Intensywnosc.
-  float intensityNow;            // INTENSITY chwilowa (0..100)
-  float intensityAverage;
-  float intensityMax;
+  float intensityNow;            // WYSILEK chwilowy (0..100) — wygladzony
+  float intensityAverage;        // sredni wysilek sesji
+  float intensityMax;            // max wysilek
+  float tssNow;                  // TSS narastajacy (wysilek calosciowy sesji)
 
   // Inne metryki.
   float surgeNow;                // uderzeniowosc (g/s)
@@ -1967,12 +1974,14 @@ void imuTask(void*) {
   OnePoleHighPass hp;
   OnePoleLowPass surgeFilter;
   OnePoleLowPass afLp;               // poprawka 2.6: LP przyspieszenia w przod dla surge
-  OnePoleLowPass liveIntensityFilter;
+  OnePoleLowPass liveIntensityFilter; // (zachowany, nieuzywany po zmianie na effort)
+  OnePoleLowPass effortFilter;        // WYSILEK: wolne wygladzanie (EFFORT_LP_HZ)
   uint32_t previousUs = 0;
   uint32_t lastStrokeUs = 0;
   float previousAfLp = 0.0f;         // poprawka 2.6: poprzednia wartosc LP(af)
   float relLean = 0.0f;
-  float intensityAccum = 0.0f;
+  float intensityAccum = 0.0f;       // suma wysilku (do sredniej)
+  double tssAccum = 0.0;             // akumulator TSS (calka (wysilek/100)^2 * dt)
 
   // Okno kandydata odepchniecia.
   bool inCandidate = false;
@@ -2056,15 +2065,20 @@ void imuTask(void*) {
         lastEnvSampleUs = nowUs;
       }
 
-      const float intensity = 100.0f * fminf(1.0f,
+      // WYSILEK CALOSCIOWY (TSS/Wysilek): surowy wskaznik z hpAf+surge, rozciagniety
+      // skala EFFORT_SCALE, potem WOLNO wygladzony (jak ciezko dysze). To osobna
+      // metryka od sily pojedynczego odbicia (ta idzie ze strokeStrengthHeld).
+      const float effortRaw = fminf(100.0f, EFFORT_SCALE * 100.0f * fminf(1.0f,
           INTENSITY_ACC_WEIGHT * fmaxf(0.0f, hpAf) / INTENSITY_ACC_REF_G +
-          INTENSITY_SURGE_WEIGHT * fmaxf(0.0f, surge) / INTENSITY_SURGE_REF_GPS);
-      const float intensityLive = liveIntensityFilter.update(intensity, dt, LIVE_INTENSITY_CUTOFF_HZ);
-
-      // Sila chwilowa (dla stref B) i calka impulsu kandydata (do pelnej sily).
-      const float strengthInstant = 100.0f * fminf(1.0f,
-          STROKE_W_PEAK * fmaxf(0.0f, hpAf) / STROKE_REF_PEAK_G +
-          STROKE_W_SURGE * fmaxf(0.0f, surge) / STROKE_REF_SURGE_GPS);
+          INTENSITY_SURGE_WEIGHT * fmaxf(0.0f, surge) / INTENSITY_SURGE_REF_GPS));
+      const float effortLive = effortFilter.update(effortRaw, dt, EFFORT_LP_HZ);
+      // TSS narastajacy: calka (wysilek/100)^2 po czasie * skala (odpowiednik stress score).
+      const float eNorm = effortLive / 100.0f;
+      tssAccum += eNorm * eNorm * dt;
+      const float tssNow = tssAccum / 60.0f * TSS_SCALE;
+      // Aliasy dla zgodnosci z reszta kodu/rekordem (intensity_x10 niesie teraz wysilek).
+      const float intensity = effortRaw;
+      const float intensityLive = effortLive;
 
       // Przechyl wzgledny z bardzo lagodna korekta grawitacyjna.
       const float leanAbs = atan2f(al, au) * 180.0f / PI;
@@ -2233,8 +2247,8 @@ void imuTask(void*) {
       // Histogramy do P90/P95 (poprawka 2.9: indeks jawnie ograniczony do 0..100,
       // percentyle liczone tylko dla probek AKTYWNYCH, aby tlo bezruchu ich nie zanizalo).
       if (!idle) {
-        stats.intensityHist[(uint8_t)clampFloat(intensityLive, 0.0f, 100.0f)]++;
-        stats.strokeHist[(uint8_t)clampFloat(strengthInstant, 0.0f, 100.0f)]++;
+        stats.intensityHist[(uint8_t)clampFloat(effortLive, 0.0f, 100.0f)]++;
+        stats.strokeHist[(uint8_t)clampFloat(strokeStrengthHeld, 0.0f, 100.0f)]++;
       }
       if (strokePeak) {
         const uint32_t phaseMs = (uint32_t)lroundf(strokePhaseMs);
@@ -2249,17 +2263,18 @@ void imuTask(void*) {
       if (queued == pdTRUE) stats.recordsQueued++; else stats.qDropCount++;
       if (depth > stats.maxQueueDepth) stats.maxQueueDepth = depth;
       if (stackSampleDue) stats.imuStackMinFreeBytes = imuStackFreeBytes;
-      // Strefy B — liczone z sily chwilowej.
-      const uint8_t zone = strokeStrengthZone(strengthInstant);
+      // Strefy B — liczone z SILY ODEPCHNIEC (utrzymana miedzy odbiciami), nie chwilowej.
+      const uint8_t zone = strokeStrengthZone(strokeStrengthHeld);
       if (zone == 0) stats.zone0Count++;
       else if (zone == 1) stats.zone1Count++;
       else if (zone == 2) stats.zone2Count++;
       else if (zone == 3) stats.zone3Count++;
       else stats.zone4Count++;
-      stats.intensityNow = intensityLive;
-      stats.intensityMax = fmaxf(stats.intensityMax, intensityLive);
-      intensityAccum += intensityLive;
+      stats.intensityNow = effortLive;
+      stats.intensityMax = fmaxf(stats.intensityMax, effortLive);
+      intensityAccum += effortLive;
       stats.intensityAverage = stats.samplesAcquired ? intensityAccum / stats.samplesAcquired : 0.0f;
+      stats.tssNow = tssNow;
       stats.surgeNow = surge;
       stats.surgeMax = fmaxf(stats.surgeMax, surge);
       stats.spinNow = gyroNorm;
@@ -2276,7 +2291,7 @@ void imuTask(void*) {
       stats.powerProxyNow = cadForPower * stats.strokeStrengthNow / 100.0f;
       stats.powerProxyMax = fmaxf(stats.powerProxyMax, stats.powerProxyNow);
       portEXIT_CRITICAL(&statsMux);
-      appendLiveHistory(record.tUs, intensityLive, strengthInstant, (float)stats.cadenceMsNow,
+      appendLiveHistory(record.tUs, effortLive, strokeStrengthHeld, (float)stats.cadenceMsNow,
                         gyroNorm, relLean, strokePeak, strokePhaseMs);
     } else if (lastValidImuUs && !imuStallReported &&
                (uint32_t)(loopUs - lastValidImuUs) >= IMU_STALL_THRESHOLD_US) {
@@ -2707,9 +2722,10 @@ canvas{display:block;width:100%;height:180px;border-radius:11px;background:#0b0e
     <article class="metric wide"><span class="label">SESJA</span><div class="split"><div class="miniMetric"><span>AKTYWNE</span><b id="active">--%</b></div><div class="miniMetric"><span>BEZRUCH</span><b id="static">--%</b></div><div class="miniMetric"><span>SILA P90/P95</span><b id="strPct">--</b></div><div class="miniMetric"><span>INT P90/P95</span><b id="intPct">--</b></div></div></article>
   </div>
 
-  <div class="sectionTitle"><h2>Intensywnosc</h2><span id="intensityPct">chwilowa</span></div>
-  <div class="metrics">
-    <article class="metric wide"><span class="label">INTENSYWNOSC CHWILOWA</span><span class="value"><span id="intensity">--</span><span class="unit">/100</span></span></article>
+  <div class="sectionTitle"><h2>Wysilek</h2><span id="intensityPct">TSS / Wysilek</span></div>
+  <div class="duo">
+    <article class="metric primary"><span class="label">WYSILEK</span><span class="value"><span id="intensity">--</span><span class="unit">/100</span></span><div class="metricSub">jak ciezko pracujesz (wygl.)</div></article>
+    <article class="metric primary"><span class="label">TSS</span><span class="value" id="tss">--</span><div class="metricSub">wysilek calosciowy (rosnie)</div></article>
   </div>
 
   <div class="sectionTitle"><h2>Jakosc logu</h2><span id="file">-</span></div>
@@ -2725,8 +2741,8 @@ canvas{display:block;width:100%;height:180px;border-radius:11px;background:#0b0e
 
 <section id="rhythmPanel" class="view">
   <div class="sectionTitle"><h2>WYKRESY NA ZYWO</h2><span id="historyInfo">BRAK DANYCH</span></div>
-  <div class="tabs" role="tablist"><button id="dynTab" class="tab active" type="button" onclick="showCharts('intensity')">SILA / INT</button><button id="phaseTab" class="tab" type="button" onclick="showCharts('phase')">FAZA / KADENCJA</button><button id="paramsTab" class="tab" type="button" onclick="showCharts('motion')">MOTION / LEAN</button></div>
-  <div id="intensityPanel" class="chartPanel active"><article class="chart"><div class="chartHeader"><h3>SILA ODPCHNIECIA · OSTATNIE 120 s</h3><span>0–100</span></div><canvas id="dynChart"></canvas><div class="legend"><span><i style="background:#ef233c"></i>SILA</span><span>1 punkt / s</span></div></article><article class="chart"><div class="chartHeader"><h3>INTENSYWNOSC</h3><span>0–100</span></div><canvas id="pushChart"></canvas><div class="legend"><span><i style="background:#ff8c42"></i>intensywnosc</span><span><i style="background:#fff"></i>odepchniecie</span></div></article></div>
+  <div class="tabs" role="tablist"><button id="dynTab" class="tab active" type="button" onclick="showCharts('intensity')">SILA / WYSILEK</button><button id="phaseTab" class="tab" type="button" onclick="showCharts('phase')">FAZA / KADENCJA</button><button id="paramsTab" class="tab" type="button" onclick="showCharts('motion')">MOTION / LEAN</button></div>
+  <div id="intensityPanel" class="chartPanel active"><article class="chart"><div class="chartHeader"><h3>SILA ODPCHNIECIA · OSTATNIE 120 s</h3><span>0–100</span></div><canvas id="dynChart"></canvas><div class="legend"><span><i style="background:#ef233c"></i>SILA</span><span>1 punkt / s</span></div></article><article class="chart"><div class="chartHeader"><h3>WYSILEK</h3><span>0–100 · wygladzony</span></div><canvas id="pushChart"></canvas><div class="legend"><span><i style="background:#ff8c42"></i>wysilek</span></div></article></div>
   <div id="phasePanel" class="chartPanel"><article class="chart"><div class="chartHeader"><h3>CZAS IMPULSU ODPCHNIECIA</h3><span>ms</span></div><canvas id="phaseChart"></canvas><div class="legend"><span><i style="background:#ffd166"></i>czas impulsu / odepchniecie</span></div></article><article class="chart"><div class="chartHeader"><h3>KADENCJA</h3><span>odstep / rytm</span></div><canvas id="cadChart"></canvas><div class="legend"><span><i style="background:#56cfe1"></i>kadencja (ms) / kad</span></div></article></div>
   <div id="motionPanel" class="chartPanel"><article class="chart"><div class="chartHeader"><h3>RUCH (spin)</h3><span>dps</span></div><canvas id="motionChart"></canvas></article><article class="chart"><div class="chartHeader"><h3>PRZECHYL WZGLEDNY</h3><span>stopnie</span></div><canvas id="leanChart"></canvas><div class="hint">LEAN jest wskaźnikiem diagnostycznym; nie interpretuj go jako bezwzględnego kąta techniki.</div></article></div>
 </section>
@@ -2753,13 +2769,13 @@ const zoneSoft=['rgba(195,208,222,.16)','rgba(94,199,232,.16)','rgba(255,209,102
 function updateZones(z,str){let values=z||[];by('zoneMap').querySelectorAll('.zoneSeg b').forEach((el,i)=>el.textContent=num(values[i],0)+'%');let v=Math.min(100,Math.max(0,Number(str||0)));let cur=by('zoneCursor');cur.style.left=v+'%';let c=zoneOf(str);by('zoneDotNow').style.background=zoneColors[c];by('zoneNow').textContent=num(str||0,0)+' / 100';let g=by('strengthGauge');if(g)g.style.width=v+'%';let root=document.documentElement;root.style.setProperty('--accent',zoneColors[c]);root.style.setProperty('--accentSoft',zoneSoft[c])}function updateQuality(s){let grade='ok',label='LOG OK',warns=[];if((s.qdrop||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('qdrop '+s.qdrop)}if((s.gap8||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('gap8 '+s.gap8)}if((s.bad||0)>0){grade='bad';label='UTRATA PROBEK';warns.push('bad '+s.bad)}if((s.sat||0)>0){if(grade!=='bad'){grade='warn';label='UWAGI'}warns.push('sat '+s.sat)}if(!warns.length&&(s.queue||0)>448){grade='warn';label='KOLJKA PELNA';warns.push('kolejka '+s.queue+'/512')}let badge=by('logBadge');badge.className='logBadge '+grade;badge.textContent=label;by('logWarns').innerHTML=warns.map(x=>{let c=(x.indexOf('qdrop')===0||x.indexOf('bad')===0)?'bad':'warn';return '<span class="'+c+'">'+x+'</span>'}).join('')}
 function zoneFromStrength(v){let n=Number(v||0);return n<15?0:n<30?1:n<50?2:n<70?3:4}
 function drawLiveStrip(){let el=by('liveStrip');if(!el){return}let html='';let pts=historyPoints.slice(-120);pts.forEach(p=>{let z=zoneFromStrength(p[2]);let c=zoneColors[z];let mark=p[6]&&p[6]>0?';outline:1px solid #fff':'';html+='<span style="background:'+c+';flex:1;min-width:3px;height:26px;border-radius:2px;'+mark+';display:inline-block" title="'+p[0]+'s · sily '+p[2]+'"></span>'});el.innerHTML=html||'<div class="hint">Brak danych 1 s...</div>'}
-async function getStatus(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw new Error();let s=await r.json();phoneStatus=s;mark(s);set('time',fmt(s.time_s));set('strokeStrength',num(s.stroke_strength,0));set('strokeZone',s.stroke_zone_name||'--');set('cadence',num(s.stride_cadence!=null?s.stride_cadence:s.cadence_per_min,0));set('legCadence',num(s.leg_cadence,0));set('cadenceMs',num(s.cadence_ms,0));set('power',num(s.power_proxy,1));set('intensity',num(s.intensity,0));set('intensityPct','P90 '+num(s.intensity_p90,0));set('strokesPerMin',num(s.strokes_per_min,1));set('strokes',s.strokes||0);set('strokesStrongPct',num(s.strokes_strong_pct,0)+'%');set('phase',num(s.strength_phase_ms,0));set('surge',num(s.surge_gps,1));set('active',num(s.active_pct,0)+'%');set('static',num(s.idle_pct,0)+'%');set('side',s.side||'R');set('strPct',num(s.stroke_p90,0)+' / '+num(s.stroke_p95,0));set('intPct',num(s.intensity_p90,0)+' / '+num(s.intensity_p95,0));updateZones(s.zones,s.stroke_strength);set('rate',num(s.rate_hz,0)+' Hz');set('queue',s.queue+' / 512');set('qdrop',s.qdrop);set('strokeZoneCard',s.stroke_zone_name||'--');set('lean',num(s.lean_deg,1));updateQuality(s);set('file',s.file||'-');set('sessionMode',(s.session_mode||'NORMAL')+' · '+(s.session_format||'RIMU04'));set('files',s.files);set('free',s.free_kb);set('clients',s.clients);by('startDefault').disabled=!s.can_start;by('startMax').disabled=!s.can_start;by('startRawDefault').disabled=!s.can_start;by('startRawMax').disabled=!s.can_start;by('stop').disabled=!s.recording;by('cancel').disabled=!s.countdown;updateWebAvailability(s);set('note','Odświeżono · '+new Date().toLocaleTimeString())}catch(e){let n=by('note');n.textContent='Brak polaczenia z urzadzeniem';n.className='note err'}}
+async function getStatus(){try{let r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)throw new Error();let s=await r.json();phoneStatus=s;mark(s);set('time',fmt(s.time_s));set('strokeStrength',num(s.stroke_strength,0));set('strokeZone',s.stroke_zone_name||'--');set('cadence',num(s.stride_cadence!=null?s.stride_cadence:s.cadence_per_min,0));set('legCadence',num(s.leg_cadence,0));set('cadenceMs',num(s.cadence_ms,0));set('power',num(s.power_proxy,1));set('intensity',num(s.intensity,0));set('tss',num(s.tss,0));set('intensityPct','TSS '+num(s.tss,0)+' · P90 '+num(s.intensity_p90,0));set('strokesPerMin',num(s.strokes_per_min,1));set('strokes',s.strokes||0);set('strokesStrongPct',num(s.strokes_strong_pct,0)+'%');set('phase',num(s.strength_phase_ms,0));set('surge',num(s.surge_gps,1));set('active',num(s.active_pct,0)+'%');set('static',num(s.idle_pct,0)+'%');set('side',s.side||'R');set('strPct',num(s.stroke_p90,0)+' / '+num(s.stroke_p95,0));set('intPct',num(s.intensity_p90,0)+' / '+num(s.intensity_p95,0));updateZones(s.zones,s.stroke_strength);set('rate',num(s.rate_hz,0)+' Hz');set('queue',s.queue+' / 512');set('qdrop',s.qdrop);set('strokeZoneCard',s.stroke_zone_name||'--');set('lean',num(s.lean_deg,1));updateQuality(s);set('file',s.file||'-');set('sessionMode',(s.session_mode||'NORMAL')+' · '+(s.session_format||'RIMU04'));set('files',s.files);set('free',s.free_kb);set('clients',s.clients);by('startDefault').disabled=!s.can_start;by('startMax').disabled=!s.can_start;by('startRawDefault').disabled=!s.can_start;by('startRawMax').disabled=!s.can_start;by('stop').disabled=!s.recording;by('cancel').disabled=!s.countdown;updateWebAvailability(s);set('note','Odświeżono · '+new Date().toLocaleTimeString())}catch(e){let n=by('note');n.textContent='Brak polaczenia z urzadzeniem';n.className='note err'}}
 async function act(cmd){if(cmd==='stop'&&!confirm('Zatrzymac bieżąca sesje?'))return;try{let r=await fetch('/api/action?cmd='+cmd,{method:'POST',cache:'no-store'}),j=await r.json();set('note',j.message||'Polecenie wyslane');by('note').className=r.ok&&j.ok?'note good':'note err';setTimeout(getStatus,250)}catch(e){set('note','Nie mozna wyslac polecenia');by('note').className='note err'}}
 function showView(view){activeView=view;['live','rhythm','zones','files','mount','diag'].forEach(name=>{by(name+'Panel').classList.toggle('active',name===view);by(name+'Tab').classList.toggle('active',name===view)});if(view==='files')loadFiles();if(view==='mount')loadMount();if(view==='diag')loadDiagnostics();if(view==='rhythm')setTimeout(drawActiveCharts,25);if(view==='zones')setTimeout(drawZoneCharts,25)}
 function showCharts(which){activeChart=which;['intensity','phase','motion'].forEach(name=>{by(name+'Panel').classList.toggle('active',name===which);by(name==='intensity'?'dynTab':name==='phase'?'phaseTab':'paramsTab').classList.toggle('active',name===which)});setTimeout(drawActiveCharts,25)}
 function chartContext(id){let c=by(id),d=Math.max(1,window.devicePixelRatio||1),w=c.clientWidth||300,h=c.clientHeight||178;if(c.width!==Math.round(w*d)||c.height!==Math.round(h*d)){c.width=Math.round(w*d);c.height=Math.round(h*d)}let x=c.getContext('2d');x.setTransform(d,0,0,d,0,0);return{x,w,h}}
 function drawLine(id,index,low,high,color,markers=false){let box=chartContext(id),x=box.x,w=box.w,h=box.h,p={l:31,r:8,t:15,b:20};x.clearRect(0,0,w,h);x.fillStyle='#0c1016';x.fillRect(0,0,w,h);x.strokeStyle='#27303d';x.lineWidth=1;for(let i=0;i<4;i++){let y=p.t+(h-p.t-p.b)*i/3;x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke()}x.fillStyle='#9ba7b7';x.font='10px system-ui';x.fillText(String(Math.round(high)),2,p.t+3);x.fillText(String(Math.round(low)),2,h-p.b+3);if(historyPoints.length<2){x.fillText('Czekam na dane aktywnej sesji...',p.l+10,h/2);return}let first=historyPoints[0][0],last=historyPoints[historyPoints.length-1][0],span=Math.max(1,last-first),val=v=>index===5?v[5]/100:v[index],py=v=>p.t+(h-p.t-p.b)*(1-(val(v)-low)/(high-low));x.strokeStyle=color;x.lineWidth=2;x.lineJoin='round';x.beginPath();historyPoints.forEach((v,i)=>{let px=p.l+(w-p.l-p.r)*(v[0]-first)/span,y=Math.max(p.t,Math.min(h-p.b,py(v)));i?x.lineTo(px,y):x.moveTo(px,y)});x.stroke();if(markers){historyPoints.forEach(v=>{if(v[6]){let px=p.l+(w-p.l-p.r)*(v[0]-first)/span,y=Math.max(p.t,Math.min(h-p.b,py(v)));x.fillStyle='#fff';x.beginPath();x.arc(px,y,3,0,Math.PI*2);x.fill()}})}x.fillStyle='#9ba7b7';x.fillText(first+'s',p.l,h-4);x.fillText(last+'s',w-p.r-18,h-4)}
-function drawPhase(){let box=chartContext('phaseChart'),x=box.x,w=box.w,h=box.h,p={l:31,r:8,t:15,b:20};x.clearRect(0,0,w,h);x.fillStyle='#0c1016';x.fillRect(0,0,w,h);x.strokeStyle='#27303d';for(let i=0;i<4;i++){let y=p.t+(h-p.t-p.b)*i/3;x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke()}x.fillStyle='#9ba7b7';x.font='10px system-ui';x.fillText('150',2,p.t+3);x.fillText('0',12,h-p.b+3);if(historyPoints.length<2){x.fillText('Czekam na zaakceptowane odepchniecie...',p.l+8,h/2);return;}let first=historyPoints[0][0],last=historyPoints[historyPoints.length-1][0],span=Math.max(1,last-first);historyPoints.forEach(v=>{if(v[6]&&v[7]>0){let px=p.l+(w-p.l-p.r)*(v[0]-first)/span,bar=(h-p.t-p.b)*Math.min(150,v[7])/150;x.fillStyle='#ffd166';x.fillRect(px-2,h-p.b-bar,4,bar)}});x.fillStyle='#9ba7b7';x.fillText(first+'s',p.l,h-4);x.fillText(last+'s',w-p.r-18,h-4)}
+function drawPhase(){let box=chartContext('phaseChart'),x=box.x,w=box.w,h=box.h,p={l:31,r:8,t:15,b:20};x.clearRect(0,0,w,h);x.fillStyle='#0c1016';x.fillRect(0,0,w,h);x.strokeStyle='#27303d';for(let i=0;i<4;i++){let y=p.t+(h-p.t-p.b)*i/3;x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke()}x.fillStyle='#9ba7b7';x.font='10px system-ui';x.fillText('250',2,p.t+3);x.fillText('0',12,h-p.b+3);if(historyPoints.length<2){x.fillText('Czekam na zaakceptowane odepchniecie...',p.l+8,h/2);return;}let first=historyPoints[0][0],last=historyPoints[historyPoints.length-1][0],span=Math.max(1,last-first);historyPoints.forEach(v=>{if(v[6]&&v[7]>0){let px=p.l+(w-p.l-p.r)*(v[0]-first)/span,bar=(h-p.t-p.b)*Math.min(250,v[7])/250;x.fillStyle='#ffd166';x.fillRect(px-2,h-p.b-bar,4,bar)}});x.fillStyle='#9ba7b7';x.fillText(first+'s',p.l,h-4);x.fillText(last+'s',w-p.r-18,h-4)}
 function drawCad(){let box=chartContext('cadChart'),x=box.x,w=box.w,h=box.h,p={l:31,r:8,t:15,b:20};x.clearRect(0,0,w,h);x.fillStyle='#0c1016';x.fillRect(0,0,w,h);x.strokeStyle='#27303d';for(let i=0;i<4;i++){let y=p.t+(h-p.t-p.b)*i/3;x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke()}x.fillStyle='#9ba7b7';x.font='10px system-ui';x.fillText('1000',2,p.t+3);x.fillText('0',12,h-p.b+3);if(historyPoints.length<2){x.fillText('Czekam na kadencje...',p.l+8,h/2);return;}let first=historyPoints[0][0],last=historyPoints[historyPoints.length-1][0],span=Math.max(1,last-first);x.strokeStyle='#56cfe1';x.lineWidth=2;x.lineJoin='round';x.beginPath();historyPoints.forEach((v,i)=>{let px=p.l+(w-p.l-p.r)*(v[0]-first)/span,y=p.t+(h-p.t-p.b)*(1-Math.min(1000,v[3])/1000);i?x.lineTo(px,y):x.moveTo(px,y)});x.stroke();x.fillStyle='#9ba7b7';x.fillText(first+'s',p.l,h-4);x.fillText(last+'s',w-p.r-18,h-4)}
 function drawActiveCharts(){if(activeChart==='intensity'){drawLine('dynChart',2,0,100,'#ef233c',true);drawLine('pushChart',1,0,100,'#ff8c42')}else if(activeChart==='phase'){drawPhase();drawCad()}else{let max=100;historyPoints.forEach(v=>max=Math.max(max,v[4]));max=Math.ceil(max/100)*100;drawLine('motionChart',4,0,max,'#56cfe1');drawLine('leanChart',5,-75,75,'#ffd166')}}
 const zoneColors=['#d9e2ec','#7bdff2','#ffd166','#ff9f1c','#ef476f'],zoneNames=['BARDZO LEKKIE','LEKKIE','SREDNIE','MOCNE','BARDZO MOCNE'];
@@ -2878,7 +2894,7 @@ void sendPhoneStatus() {
       "\"stroke_zone\":%u,\"stroke_zone_name\":\"%s\",\"strokes_per_min\":%.2f,\"strokes\":%lu,\"strokes_strong_pct\":%.1f,"
       "\"cadence_per_min\":%.1f,\"cadence_ms\":%u,\"stride_cadence\":%.1f,\"leg_cadence\":%.1f,\"power_proxy\":%.2f,\"power_proxy_max\":%.2f,"
       "\"strength_phase_ms\":%.1f,\"strength_phase_avg_ms\":%.1f,\"strength_phase_max_ms\":%lu,"
-      "\"intensity\":%.2f,\"intensity_avg\":%.2f,\"intensity_max\":%.2f,\"intensity_p90\":%u,\"intensity_p95\":%u,"
+      "\"intensity\":%.2f,\"intensity_avg\":%.2f,\"intensity_max\":%.2f,\"intensity_p90\":%u,\"intensity_p95\":%u,\"tss\":%.1f,"
       "\"surge_gps\":%.1f,\"surge_max\":%.1f,\"spin_dps\":%.2f,\"gload_g\":%.3f,\"lean_deg\":%.2f,"
       "\"active_pct\":%.1f,\"idle_pct\":%.1f,\"zones\":[%.1f,%.1f,%.1f,%.1f,%.1f],"
       "\"rate_hz\":%.2f,\"queue\":%lu,\"qdrop\":%lu,\"gap8\":%lu,\"bad\":%lu,\"sat\":%lu,"
@@ -2896,7 +2912,7 @@ void sendPhoneStatus() {
       s.cadencePerMin, s.cadenceMsNow, s.strideCadencePerMin, s.legCadencePerMin, s.powerProxyNow, s.powerProxyMax,
       s.strokePhaseSumMs && s.strokeCount ? (float)s.strokePhaseSumMs / s.strokeCount : 0.0f, strokePhaseAvg,
       (unsigned long)s.strokePhaseMaxMs,
-      s.intensityNow, s.intensityAverage, s.intensityMax, intP90, intP95,
+      s.intensityNow, s.intensityAverage, s.intensityMax, intP90, intP95, s.tssNow,
       s.surgeNow, s.surgeMax, s.spinNow, s.gloadNow, s.relLeanDeg,
       100.0f * s.activeSamples / sampleTotal, 100.0f * s.idleSamples / sampleTotal,
       100.0f * s.zone0Count / sampleTotal, 100.0f * s.zone1Count / sampleTotal,
